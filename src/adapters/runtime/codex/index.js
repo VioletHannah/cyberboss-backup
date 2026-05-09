@@ -149,7 +149,12 @@ function createCodexRuntimeAdapter(config) {
           throw new Error("thread/start did not return a thread id");
         }
         sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, metadata);
-        outboundText = buildOpeningTurnText(config, text);
+        outboundText = buildOpeningTurnText(config, text, {
+          sessionStore,
+          bindingKey,
+          workspaceRoot,
+          runtimeId: "codex",
+        });
       } else {
         await runtimeClient.resumeThread({ threadId }).catch(async () => {
           sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
@@ -159,7 +164,12 @@ function createCodexRuntimeAdapter(config) {
             throw new Error("thread/start did not return a thread id");
           }
           sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, metadata);
-          outboundText = buildOpeningTurnText(config, text);
+          outboundText = buildOpeningTurnText(config, text, {
+            sessionStore,
+            bindingKey,
+            workspaceRoot,
+            runtimeId: "codex",
+          });
         });
       }
 

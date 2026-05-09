@@ -2,6 +2,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const fs = require("fs");
+const { spawn } = require("child_process");
 const { createWeixinChannelAdapter } = require("../adapters/channel/weixin");
 const { DEFAULT_MIN_WEIXIN_CHUNK, MAX_MIN_WEIXIN_CHUNK } = require("../adapters/channel/weixin/config-store");
 const { persistIncomingWeixinAttachments } = require("../adapters/channel/weixin/media-receive");
@@ -24,6 +25,13 @@ const { SystemMessageDispatcher } = require("./system-message-dispatcher");
 const { TimelineScreenshotQueueStore } = require("./timeline-screenshot-queue-store");
 const { TurnGateStore } = require("./turn-gate-store");
 const { ReminderQueueStore } = require("../adapters/channel/weixin/reminder-queue-store");
+const { MemoryService } = require("../services/memory-service");
+const { MemoryResolver, injectMemoryPrompt } = require("./memory-resolver");
+const { MemoryValidator } = require("./memory-validator");
+const { extractMemoryCandidates } = require("./memory-candidate-extractor");
+const { MemoryMiner } = require("./memory-miner");
+const { MemoryCommandRouter } = require("./memory-command-router");
+const { filterOutgoingMessage } = require("./outgoing-message-filter");
 const {
   matchesCommandPrefix,
   canonicalizeCommandTokens,
@@ -71,6 +79,15 @@ class CyberbossApp {
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
     this.timelineScreenshotQueue = new TimelineScreenshotQueueStore({ filePath: config.timelineScreenshotQueueFile });
     this.reminderQueue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
+    this.memoryService = new MemoryService(config);
+    this.memoryService.initialize();
+    this.memoryResolver = new MemoryResolver({ memoryService: this.memoryService });
+    this.memoryValidator = new MemoryValidator({ memoryService: this.memoryService });
+    this.memoryMiner = new MemoryMiner({ memoryService: this.memoryService });
+    this.memoryCommandRouter = new MemoryCommandRouter({
+      memoryService: this.memoryService,
+      memoryMiner: this.memoryMiner,
+    });
     this.turnGateStore = new TurnGateStore();
     this.pendingInboundByScope = new Map();
     this.pendingImageInboundByScope = new Map();
@@ -80,9 +97,12 @@ class CyberbossApp {
       channelAdapter: this.channelAdapter,
       sessionStore: this.runtimeAdapter.getSessionStore(),
       onDeferredSystemReply: (payload) => this.deferSystemReply(payload),
+      memoryValidator: this.memoryValidator,
+      outgoingMessageFilter: filterOutgoingMessage,
     });
     this.pendingRuntimeEventWatchdogs = new Map();
     this.pendingOperationByRunKey = new Map();
+    this.memoryTurnMetadataByRunKey = new Map();
     this.runtimeEventChain = Promise.resolve();
     this.runtimeAdapter.onEvent((event) => {
       this.clearRuntimeEventWatchdog(event?.payload?.threadId);
@@ -421,6 +441,7 @@ class CyberbossApp {
   }
 
   async dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared }) {
+    prepared = this.applyPreResponseMemory(prepared);
     const pendingScopeKey = this.turnGateStore.begin(bindingKey, workspaceRoot);
     await this.channelAdapter.sendTyping({
       userId: prepared.senderId,
@@ -463,6 +484,25 @@ class CyberbossApp {
       } else {
         this.streamDelivery.queueReplyTargetForThread(turn.threadId, replyTarget);
       }
+      if (prepared.memoryContext) {
+        this.streamDelivery.setMemoryContextForTurn({
+          threadId: turn.threadId,
+          turnId: turn.turnId,
+          context: prepared.memoryContext,
+        });
+      }
+      this.memoryTurnMetadataByRunKey.set(buildRunKey(turn.threadId, turn.turnId), {
+        turnId: turn.turnId || "",
+        threadId: turn.threadId,
+        bindingKey,
+        workspaceRoot,
+        provider: prepared.provider,
+        senderId: prepared.senderId,
+        accountId: prepared.accountId,
+        messageId: prepared.messageId,
+        text: prepared.originalText || prepared.text,
+        receivedAt: prepared.receivedAt,
+      });
       this.scheduleRuntimeEventWatchdog({
         bindingKey,
         workspaceRoot,
@@ -919,6 +959,27 @@ class CyberbossApp {
     };
   }
 
+  applyPreResponseMemory(prepared) {
+    if (!prepared || prepared.memoryApplied || prepared.provider === "system") {
+      return prepared;
+    }
+    const userText = prepared.originalText || prepared.text || "";
+    try {
+      const resolved = this.memoryResolver.resolveForMessage(userText);
+      const withMemory = injectMemoryPrompt(prepared, resolved);
+      return {
+        ...withMemory,
+        memoryApplied: true,
+      };
+    } catch (error) {
+      console.error(`[cyberboss] memory pre-response read failed: ${error.message}`);
+      return {
+        ...prepared,
+        memoryApplied: true,
+      };
+    }
+  }
+
   async flushPendingSystemMessages() {
     const pendingMessages = this.systemMessageDispatcher?.drainPending() || [];
     for (const message of pendingMessages) {
@@ -1049,6 +1110,9 @@ class CyberbossApp {
       case "status":
         await this.handleStatusCommand(normalized);
         return;
+      case "restart":
+        await this.handleRestartCommand(normalized);
+        return;
       case "new":
         await this.handleNewCommand(normalized);
         return;
@@ -1078,6 +1142,9 @@ class CyberbossApp {
       case "model":
         await this.handleModelCommand(normalized, command);
         return;
+      case "memory":
+        await this.handleMemoryCommand(normalized, command);
+        return;
       case "star":
         await this.handleStarCommand(normalized);
         return;
@@ -1091,6 +1158,40 @@ class CyberbossApp {
           contextToken: normalized.contextToken,
         });
     }
+  }
+
+  async handleMemoryCommand(normalized, command) {
+    const text = await this.memoryCommandRouter.run(command.args, {
+      rawText: normalized.text,
+      senderId: normalized.senderId,
+    });
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text,
+      contextToken: normalized.contextToken,
+      preserveBlock: true,
+    });
+  }
+
+  async handleRestartCommand(normalized) {
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: "收到，开始重启。",
+      contextToken: normalized.contextToken,
+    });
+    this.spawnSharedRestart();
+  }
+
+  spawnSharedRestart() {
+    const scriptPath = path.join(__dirname, "..", "..", "scripts", "shared-restart.js");
+    const child = spawn(process.execPath, [scriptPath, "--replace-pid", String(process.pid)], {
+      cwd: path.join(__dirname, "..", ".."),
+      env: process.env,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
   }
 
   async handleBindCommand(normalized, command) {
@@ -1608,6 +1709,13 @@ class CyberbossApp {
     }
     if (event.type === "runtime.turn.completed" || event.type === "runtime.turn.failed") {
       const completedRunKey = buildRunKey(event.payload.threadId, event.payload.turnId);
+      const memoryTurn = this.memoryTurnMetadataByRunKey.get(completedRunKey) || null;
+      this.memoryTurnMetadataByRunKey.delete(completedRunKey);
+      if (event.type === "runtime.turn.completed" && memoryTurn) {
+        void this.handleMemoryTurnFinished(memoryTurn).catch((error) => {
+          console.error(`[cyberboss] memory post-response failed: ${error.message}`);
+        });
+      }
       const pendingOperations = this.pendingOperationByRunKey;
       const pendingOperation = pendingOperations?.get?.(completedRunKey) || null;
       if (pendingOperation && pendingOperations?.delete) {
@@ -1707,6 +1815,37 @@ class CyberbossApp {
     }
     await this.runtimeAdapter.respondApproval(approvalResponse).catch(() => {});
     this.threadStateStore.resolveApproval(event.payload.threadId, "running");
+  }
+
+  async handleMemoryTurnFinished(turn) {
+    if (!turn || turn.provider === "system") {
+      return;
+    }
+    const userText = String(turn.text || "").trim();
+    if (!userText || userText.startsWith("/memory")) {
+      return;
+    }
+    const strongCandidates = extractMemoryCandidates({
+      text: userText,
+      turnId: turn.turnId || turn.messageId,
+    });
+    if (strongCandidates.length) {
+      for (const candidate of strongCandidates) {
+        if (candidate.confidence < 0.8) {
+          this.memoryService.appendPending(candidate);
+        } else {
+          this.memoryService.appendMemory(candidate);
+        }
+      }
+      return;
+    }
+    this.memoryMiner.addTurn({
+      text: userText,
+      turnId: turn.turnId || turn.messageId,
+    });
+    if (this.memoryMiner.shouldRunBatchMining()) {
+      this.memoryMiner.runBatchMining();
+    }
   }
 
   async stopTypingForThread(threadId) {

@@ -3,10 +3,20 @@ const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
 class StreamDelivery {
-  constructor({ channelAdapter, sessionStore, onDeferredSystemReply, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
+  constructor({
+    channelAdapter,
+    sessionStore,
+    onDeferredSystemReply,
+    systemReplyRetryScheduleMs,
+    sameTokenRetryDelayMs,
+    memoryValidator = null,
+    outgoingMessageFilter = null,
+  }) {
     this.channelAdapter = channelAdapter;
     this.sessionStore = sessionStore;
     this.onDeferredSystemReply = typeof onDeferredSystemReply === "function" ? onDeferredSystemReply : null;
+    this.memoryValidator = memoryValidator;
+    this.outgoingMessageFilter = typeof outgoingMessageFilter === "function" ? outgoingMessageFilter : null;
     this.systemReplyRetryScheduleMs = Array.isArray(systemReplyRetryScheduleMs) && systemReplyRetryScheduleMs.length
       ? systemReplyRetryScheduleMs.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value >= 0)
       : [1_500, 2_500, 4_000, 6_000];
@@ -17,6 +27,7 @@ class StreamDelivery {
     this.replyTargetByTurnKey = new Map();
     this.replyTargetQueueByThreadId = new Map();
     this.deferredReplyPrefixByBindingKey = new Map();
+    this.memoryContextByRunKey = new Map();
     this.stateByRunKey = new Map();
     this.runSequence = 0;
   }
@@ -58,6 +69,19 @@ class StreamDelivery {
     const activeState = this.stateByRunKey.get(runKey);
     if (activeState) {
       this.applyThreadReplyTarget(activeState, normalizedTarget);
+    }
+  }
+
+  setMemoryContextForTurn({ threadId = "", turnId = "", context = null } = {}) {
+    const normalizedThreadId = normalizeText(threadId);
+    if (!normalizedThreadId || !context) {
+      return;
+    }
+    const runKey = buildRunKey(normalizedThreadId, normalizeText(turnId));
+    this.memoryContextByRunKey.set(runKey, context);
+    const state = this.stateByRunKey.get(runKey);
+    if (state) {
+      state.memoryContext = context;
     }
   }
 
@@ -170,8 +194,10 @@ class StreamDelivery {
       flushPromise: null,
       sequence: this.runSequence += 1,
       threadReplyTargetAttached: false,
+      memoryContext: null,
     };
     this.stateByRunKey.set(runKey, created);
+    created.memoryContext = this.memoryContextByRunKey.get(runKey) || null;
     this.attachReplyTarget(created);
     return created;
   }
@@ -367,10 +393,14 @@ class StreamDelivery {
     if (!baseText) {
       return;
     }
+    const safeText = this.prepareOutgoingText(baseText, state, { allowMemoryDetails: false });
+    if (!safeText) {
+      return;
+    }
 
     const payload = {
       userId: state.replyTarget.userId,
-      text: prependDeferredPrefix ? buildEffectiveReplyText(state.deferredReplyPrefix, baseText) : baseText,
+      text: prependDeferredPrefix ? buildEffectiveReplyText(state.deferredReplyPrefix, safeText) : safeText,
       contextToken: state.replyTarget.contextToken,
     };
     if (prependDeferredPrefix) {
@@ -381,12 +411,31 @@ class StreamDelivery {
 
   async sendSystemReply(state, text) {
     const initialTarget = state.replyTarget;
+    const safeText = this.prepareOutgoingText(text, state, { allowMemoryDetails: true });
+    if (!safeText) {
+      return;
+    }
     const payload = {
       userId: initialTarget.userId,
-      text,
+      text: safeText,
       contextToken: initialTarget.contextToken,
     };
     await this.sendTextWithRetry(state, payload, { kind: "system_reply" });
+  }
+
+  prepareOutgoingText(text, state, { allowMemoryDetails = false } = {}) {
+    let result = String(text || "").trim();
+    if (!result) {
+      return "";
+    }
+    if (this.memoryValidator && typeof this.memoryValidator.validateDraft === "function") {
+      const validated = this.memoryValidator.validateDraft(result, state?.memoryContext || null);
+      result = validated?.text || result;
+    }
+    if (this.outgoingMessageFilter) {
+      result = this.outgoingMessageFilter(result, { allowMemoryDetails });
+    }
+    return trimOuterBlankLines(result);
   }
 
   async sendTextWithRetry(state, payload, { kind }) {
@@ -491,6 +540,7 @@ class StreamDelivery {
       return;
     }
     this.replyTargetByTurnKey.delete(normalizedRunKey);
+    this.memoryContextByRunKey.delete(normalizedRunKey);
     this.stateByRunKey.delete(normalizedRunKey);
   }
 

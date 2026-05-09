@@ -32,6 +32,13 @@ const COMMAND_GROUPS = [
         status: "active",
       },
       {
+        action: "app.shared_restart",
+        summary: "Restart the shared WeChat bridge",
+        terminal: ["shared restart"],
+        weixin: ["/restart"],
+        status: "active",
+      },
+      {
         action: "app.shared_open",
         summary: "Attach to the shared thread currently bound in WeChat",
         terminal: ["shared open"],
@@ -252,6 +259,13 @@ const COMMAND_GROUPS = [
         weixin: ["/help"],
         status: "active",
       },
+      {
+        action: "memory.manage",
+        summary: "Search, update, approve, or prune local long-term memory",
+        terminal: [],
+        weixin: ["/memory <command>"],
+        status: "active",
+      },
     ],
   },
 ];
@@ -273,6 +287,7 @@ function buildTerminalHelpText() {
     "  cyberboss accounts     list locally saved accounts",
     "  cyberboss doctor       print current config and thread state",
     "  npm run shared:start   start the shared app-server and WeChat bridge",
+    "  npm run shared:restart restart the shared WeChat bridge",
     "  npm run shared:open    attach to the shared thread currently bound in WeChat",
     "  npm run shared:status  show shared bridge status",
   ];
@@ -334,6 +349,7 @@ function actionEmoji(action) {
     case "approval.reject_once": return "❌";
     case "model.inspect":
     case "model.select": return "🤖";
+    case "app.shared_restart": return "🔄";
     case "app.help": return "❓";
     case "app.star": return "⭐️";
     default: return "•";
@@ -364,6 +380,7 @@ function toTerminalCommandExample(commandText) {
     case "help":
       return `cyberboss ${normalized}`;
     case "shared start":
+    case "shared restart":
     case "shared open":
     case "shared status":
       return `npm run ${normalized.replace(" ", ":")}`;

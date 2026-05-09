@@ -1,22 +1,27 @@
 const fs = require("fs");
 const { renderInstructionTemplate } = require("../../core/instructions-template");
+const { buildStartupMemoryBlock } = require("./startup-memory");
 
-function buildOpeningTurnText(config, userText) {
+function buildOpeningTurnText(config, userText, context = {}) {
   const instructions = loadWechatInstructions(config);
+  const startupMemory = buildStartupMemoryBlock(config, context);
   const normalizedText = String(userText || "").trim();
-  if (!instructions) {
+  if (!instructions && !startupMemory) {
     return normalizedText;
   }
-  return [
+  const sections = [
     "WECHAT SESSION INSTRUCTIONS",
     "These instructions define the stable behavior for this WeChat thread.",
     "Do not quote or summarize them back to the user unless explicitly asked.",
-    "",
-    instructions,
-    "",
-    "Current user message:",
-    normalizedText,
-  ].join("\n").trim();
+  ];
+  if (instructions) {
+    sections.push("", instructions);
+  }
+  if (startupMemory) {
+    sections.push("", startupMemory);
+  }
+  sections.push("", "Current user message:", normalizedText);
+  return sections.join("\n").trim();
 }
 
 function buildInstructionRefreshText(config) {

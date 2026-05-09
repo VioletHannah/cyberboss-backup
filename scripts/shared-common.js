@@ -28,6 +28,7 @@ const logDir = path.join(stateDir, "logs");
 const appServerPidFile = path.join(logDir, "shared-app-server.pid");
 const bridgePidFile = path.join(logDir, "shared-wechat.pid");
 const appServerLogFile = path.join(logDir, "shared-app-server.log");
+const bridgeLogFile = path.join(logDir, "shared-wechat.log");
 const accountsDir = path.join(stateDir, "accounts");
 const sessionFile = process.env.CYBERBOSS_SESSIONS_FILE || path.join(stateDir, "sessions.json");
 
@@ -108,12 +109,13 @@ function openLogFile(filePath) {
 function spawnDetachedCommand(command, args, { logFile, cwd = rootDir, env = {} } = {}) {
   const stdoutFd = openLogFile(logFile);
   const stderrFd = openLogFile(logFile);
+  const useShell = process.platform === "win32" && !String(command || "").toLowerCase().endsWith(".exe");
   const child = spawn(command, args, {
     cwd,
     env: { ...process.env, ...env },
     detached: true,
     stdio: ["ignore", stdoutFd, stderrFd],
-    shell: process.platform === "win32",
+    shell: useShell,
   });
   child.unref();
   return child.pid;
@@ -274,11 +276,13 @@ module.exports = {
   appServerPidFile,
   bridgePidFile,
   appServerLogFile,
+  bridgeLogFile,
   ensureLogDir,
   isPidAlive,
   readPidFile,
   writePidFile,
   removePidFileIfMatches,
+  spawnDetachedCommand,
   ensureSharedAppServer,
   ensureBridgeNotRunning,
   resolveBoundThread,

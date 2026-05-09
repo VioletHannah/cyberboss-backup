@@ -27,7 +27,7 @@ async function main() {
       ...process.argv.slice(2),
     ], {
       stdio: "inherit",
-      shell: process.platform === "win32",
+      shell: process.platform === "win32" && !String(process.env.CYBERBOSS_CODEX_COMMAND || "codex").toLowerCase().endsWith(".exe"),
     });
 
     child.on("exit", (code, signal) => {

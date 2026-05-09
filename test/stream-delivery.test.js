@@ -2,6 +2,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { StreamDelivery } = require("../src/core/stream-delivery");
+const { filterOutgoingMessage } = require("../src/core/outgoing-message-filter");
+const { MemoryValidator } = require("../src/core/memory-validator");
 
 const DEFERRED_REPLY_NOTICE = "由于微信 context_token 的限制，上轮对话里有一部分内容当时没能送达；这次用户再次发来消息、context_token 刷新后，先把遗留内容补上。如果这种情况反复出现，可发送 /chunk <数字>（例如 /chunk 50）调大最小合并字符数，减少消息分片。";
 const DEFERRED_PLAIN_REPLY_HEADER = "===== 上轮对话遗留内容 =====";
@@ -35,6 +37,40 @@ function createHarness({ sendText, getKnownContextTokens } = {}) {
 
   const streamDelivery = new StreamDelivery({ channelAdapter, sessionStore });
   return { sent, streamDelivery, bindingByThreadId };
+}
+
+function createMemoryHarness(memoryContext) {
+  const sent = [];
+  const channelAdapter = {
+    async sendText(payload) {
+      sent.push(payload);
+    },
+    getKnownContextTokens() {
+      return {};
+    },
+  };
+  const sessionStore = {
+    findBindingForThreadId() {
+      return null;
+    },
+  };
+  const streamDelivery = new StreamDelivery({
+    channelAdapter,
+    sessionStore,
+    memoryValidator: new MemoryValidator(),
+    outgoingMessageFilter: filterOutgoingMessage,
+  });
+  streamDelivery.queueReplyTargetForThread("thread-memory", {
+    userId: "user-memory",
+    contextToken: "ctx-memory",
+    provider: "weixin",
+  });
+  streamDelivery.setMemoryContextForTurn({
+    threadId: "thread-memory",
+    turnId: "turn-memory",
+    context: memoryContext,
+  });
+  return { sent, streamDelivery };
 }
 
 async function runCompletedTurn(streamDelivery, { threadId, turnId, itemId, text }) {
@@ -272,6 +308,42 @@ test("plain weixin reply still strips protocol leak text", async () => {
     text: "好的。",
     contextToken: "ctx-4",
   });
+});
+
+test("plain weixin reply filters memory internals before delivery", async () => {
+  const { sent, streamDelivery } = createMemoryHarness({ entries: [] });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-memory",
+    turnId: "turn-memory",
+    itemId: "item-memory",
+    text: "我会读取 index.jsonl，然后进行后台写入和冲突校验。\n自然回复在这里。",
+  });
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, "自然回复在这里。");
+});
+
+test("plain weixin reply rewrites hard preference conflicts", async () => {
+  const { sent, streamDelivery } = createMemoryHarness({
+    entries: [{
+      status: "active",
+      priority: "hard_preference",
+      key: "tea",
+      value: "green",
+      text: "User likes green tea.",
+    }],
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-memory",
+    turnId: "turn-memory",
+    itemId: "item-memory",
+    text: "tea 不是 green。",
+  });
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /green tea/);
 });
 
 test("plain weixin reply does not leak a standalone structured action payload", async () => {

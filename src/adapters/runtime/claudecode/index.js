@@ -267,7 +267,14 @@ function createClaudeCodeRuntimeAdapter(config) {
         attached = await attachClientToThread(workspaceRoot, "");
       }
       const { client, threadId: activeThreadId } = attached;
-      const outboundText = openingTurn ? buildOpeningTurnText(config, text) : text;
+      const outboundText = openingTurn
+        ? buildOpeningTurnText(config, text, {
+          sessionStore,
+          bindingKey,
+          workspaceRoot,
+          runtimeId: "claudecode",
+        })
+        : text;
       const outboundThreadId = activeThreadId || threadId || `pending-${Date.now()}`;
       await client.sendUserMessage({ text: outboundText, threadId: outboundThreadId });
       if (!openingTurn) {

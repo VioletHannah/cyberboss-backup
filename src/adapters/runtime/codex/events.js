@@ -61,6 +61,9 @@ function mapCodexMessageToRuntimeEvent(message) {
   }
 
   if (method === "item/agentMessage/delta") {
+    if (!isDeliverableAssistantMessage(params)) {
+      return null;
+    }
     const text = extractAssistantText(params);
     if (!text) {
       return null;
@@ -77,6 +80,9 @@ function mapCodexMessageToRuntimeEvent(message) {
   }
 
   if (method === "item/completed" && normalizeString(params?.item?.type).toLowerCase() === "agentmessage") {
+    if (!isDeliverableAssistantMessage(params)) {
+      return null;
+    }
     const text = extractAssistantText(params);
     return {
       type: "runtime.reply.completed",
@@ -132,6 +138,15 @@ function normalizeContextPayload(message) {
 
 function isApprovalRequestMethod(method) {
   return typeof method === "string" && method.endsWith("requestApproval");
+}
+
+function isDeliverableAssistantMessage(params) {
+  const channel = normalizeString(
+    params?.channel
+    || params?.item?.channel
+    || params?.item?.metadata?.channel
+  ).toLowerCase();
+  return !channel || channel === "final";
 }
 
 function extractApprovalDisplayCommand(params) {
