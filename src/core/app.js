@@ -2,7 +2,6 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const fs = require("fs");
-const { spawn } = require("child_process");
 const { createWeixinChannelAdapter } = require("../adapters/channel/weixin");
 const { DEFAULT_MIN_WEIXIN_CHUNK, MAX_MIN_WEIXIN_CHUNK } = require("../adapters/channel/weixin/config-store");
 const { persistIncomingWeixinAttachments } = require("../adapters/channel/weixin/media-receive");
@@ -1110,9 +1109,6 @@ class CyberbossApp {
       case "status":
         await this.handleStatusCommand(normalized);
         return;
-      case "restart":
-        await this.handleRestartCommand(normalized);
-        return;
       case "new":
         await this.handleNewCommand(normalized);
         return;
@@ -1171,27 +1167,6 @@ class CyberbossApp {
       contextToken: normalized.contextToken,
       preserveBlock: true,
     });
-  }
-
-  async handleRestartCommand(normalized) {
-    await this.channelAdapter.sendText({
-      userId: normalized.senderId,
-      text: "收到，开始重启。",
-      contextToken: normalized.contextToken,
-    });
-    this.spawnSharedRestart();
-  }
-
-  spawnSharedRestart() {
-    const scriptPath = path.join(__dirname, "..", "..", "scripts", "shared-restart.js");
-    const child = spawn(process.execPath, [scriptPath, "--replace-pid", String(process.pid)], {
-      cwd: path.join(__dirname, "..", ".."),
-      env: process.env,
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    child.unref();
   }
 
   async handleBindCommand(normalized, command) {
