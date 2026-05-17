@@ -37,6 +37,7 @@ The runtime can be `codex` or `claudecode`, but the documented command surface s
 - `thread.stop`
 - `system.checkin_range`
 - `channel.chunk_min`
+- `reminder.interactive`
 
 ### Approvals & Control
 
@@ -100,6 +101,9 @@ Notes:
 - `/switch <threadId>`
 - `/checkin <min>-<max>`
 - `/chunk <number>`
+- `/remind <time> <task>`
+- `/remind interval <time>`
+- `/remind maxtimes <number>`
 - `/yes`
 - `/always`
 - `/no`

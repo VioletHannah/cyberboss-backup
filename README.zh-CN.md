@@ -267,6 +267,12 @@ CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
   调整当前项目的随机 checkin 区间
 - `/chunk <number>`
   调整微信短回复的最小合并字符数
+- `/remind <time> <task>`
+  设置微信提醒，例如 `/remind 5m 睡觉`
+- `/remind interval <time>`
+  设置提醒追问间隔
+- `/remind maxtimes <number>`
+  设置提醒最大追问次数
 - `/yes`
   允许当前待处理授权一次
 - `/always`
@@ -354,6 +360,8 @@ ${HOME}/.cyberboss
   首次运行自动生成的本地 instructions
 - `reminder-queue.json`
   reminder 队列
+- `reminder-config.json`
+  reminder 追问配置
 - `system-message-queue.json`
   system / checkin 队列
 - `deferred-system-replies.json`

@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -55,4 +56,27 @@ test("timeline failure message explains port conflicts", () => {
   });
   assert.match(message, /port is already in use/i);
   assert.match(message, /4317/);
+});
+
+test("cyberboss timeline CLI forwards to timeline-for-agent", () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-timeline-cli-"));
+  const result = spawnSync(process.execPath, [
+    path.resolve(__dirname, "../bin/cyberboss.js"),
+    "timeline",
+    "read",
+    "--date",
+    "2026-05-17",
+  ], {
+    cwd: path.resolve(__dirname, ".."),
+    env: {
+      ...process.env,
+      CYBERBOSS_STATE_DIR: stateDir,
+    },
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.date, "2026-05-17");
+  assert.equal(parsed.status, "missing");
 });

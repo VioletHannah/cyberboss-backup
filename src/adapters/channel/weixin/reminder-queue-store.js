@@ -45,6 +45,38 @@ class ReminderQueueStore {
     return normalized;
   }
 
+  acknowledgeForSender(accountId, senderId, ackedAt = new Date().toISOString()) {
+    this.load();
+    const normalizedAccountId = normalizeText(accountId);
+    const normalizedSenderId = normalizeText(senderId);
+    if (!normalizedAccountId || !normalizedSenderId) {
+      return [];
+    }
+
+    const acknowledged = [];
+    const pending = [];
+    for (const reminder of this.state.reminders) {
+      if (
+        reminder.kind === "interactive"
+        && reminder.accountId === normalizedAccountId
+        && reminder.senderId === normalizedSenderId
+      ) {
+        acknowledged.push({
+          ...reminder,
+          ackedAt: normalizeIsoTime(ackedAt) || new Date().toISOString(),
+        });
+      } else {
+        pending.push(reminder);
+      }
+    }
+
+    if (acknowledged.length) {
+      this.state.reminders = pending;
+      this.save();
+    }
+    return acknowledged;
+  }
+
   listDue(nowMs = Date.now()) {
     this.load();
     const due = [];
@@ -84,10 +116,16 @@ function normalizeReminder(reminder) {
   const text = typeof reminder.text === "string" ? reminder.text.trim() : "";
   const dueAtMs = Number(reminder.dueAtMs);
   const createdAt = typeof reminder.createdAt === "string" ? reminder.createdAt.trim() : "";
+  const kind = normalizeReminderKind(reminder.kind);
+  const promptCount = normalizeNonNegativeInteger(reminder.promptCount);
+  const intervalMs = normalizePositiveInteger(reminder.intervalMs);
+  const maxTimes = normalizePositiveInteger(reminder.maxTimes);
+  const lastPromptAt = normalizeIsoTime(reminder.lastPromptAt);
+  const ackedAt = normalizeIsoTime(reminder.ackedAt);
   if (!id || !accountId || !senderId || !contextToken || !text || !Number.isFinite(dueAtMs) || dueAtMs <= 0) {
     return null;
   }
-  return {
+  const normalized = {
     id,
     accountId,
     senderId,
@@ -96,6 +134,48 @@ function normalizeReminder(reminder) {
     dueAtMs,
     createdAt: createdAt || new Date().toISOString(),
   };
+  if (kind === "interactive") {
+    return {
+      ...normalized,
+      kind,
+      promptCount,
+      intervalMs,
+      maxTimes,
+      lastPromptAt,
+      ackedAt,
+    };
+  }
+  return {
+    ...normalized,
+    kind,
+  };
+}
+
+function normalizeReminderKind(value) {
+  return value === "interactive" ? "interactive" : "system";
+}
+
+function normalizeIsoTime(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return "";
+  }
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : "";
+}
+
+function normalizePositiveInteger(value) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function normalizeNonNegativeInteger(value) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 module.exports = { ReminderQueueStore };

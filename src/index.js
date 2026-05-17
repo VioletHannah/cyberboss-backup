@@ -9,6 +9,7 @@ const { CyberbossApp } = require("./core/app");
 const { runSystemCheckinPoller } = require("./app/system-checkin-poller");
 const { buildTerminalHelpText } = require("./core/command-registry");
 const { ensureStickerCatalogFilesSync } = require("./services/sticker-service");
+const { createTimelineIntegration } = require("./integrations/timeline");
 const { createProjectTooling } = require("./tools/create-project-tooling");
 const { runToolMcpServer } = require("./tools/mcp-stdio-server");
 
@@ -138,6 +139,18 @@ async function main() {
     const workspaceRoot = readFlagValue(argv.slice(1), "--workspace-root") || process.cwd();
     const { toolHost } = createProjectTooling(config);
     runToolMcpServer({ toolHost, runtimeId, workspaceRoot });
+    return;
+  }
+
+  if (command === "timeline") {
+    const subcommand = argv[1] || "help";
+    const result = await createTimelineIntegration(config).runSubcommand(subcommand, argv.slice(2));
+    if (result.stdout) {
+      process.stdout.write(result.stdout);
+    }
+    if (result.stderr) {
+      process.stderr.write(result.stderr);
+    }
     return;
   }
 

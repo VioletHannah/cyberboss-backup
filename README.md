@@ -259,6 +259,12 @@ Switch the runtime with `CYBERBOSS_RUNTIME`. You do not need a different command
   Update the proactive random check-in range for the current project
 - `/chunk <number>`
   Adjust the minimum merge size for short WeChat reply chunks
+- `/remind <time> <task>`
+  Set a WeChat reminder, for example `/remind 5m sleep`
+- `/remind interval <time>`
+  Set the follow-up interval for reminders
+- `/remind maxtimes <number>`
+  Set the maximum reminder follow-up count
 - `/yes`
   Allow the current approval once
 - `/always`
@@ -344,6 +350,8 @@ Common contents:
   local persona file generated on first run
 - `reminder-queue.json`
   reminder queue
+- `reminder-config.json`
+  reminder follow-up configuration
 - `system-message-queue.json`
   system / check-in queue
 - `deferred-system-replies.json`

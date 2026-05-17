@@ -24,6 +24,8 @@ const { SystemMessageDispatcher } = require("./system-message-dispatcher");
 const { TimelineScreenshotQueueStore } = require("./timeline-screenshot-queue-store");
 const { TurnGateStore } = require("./turn-gate-store");
 const { ReminderQueueStore } = require("../adapters/channel/weixin/reminder-queue-store");
+const { ReminderConfigStore } = require("./reminder-config-store");
+const { parseDelay } = require("../services/reminder-service");
 const { MemoryService } = require("../services/memory-service");
 const { MemoryResolver, injectMemoryPrompt } = require("./memory-resolver");
 const { MemoryValidator } = require("./memory-validator");
@@ -78,6 +80,7 @@ class CyberbossApp {
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
     this.timelineScreenshotQueue = new TimelineScreenshotQueueStore({ filePath: config.timelineScreenshotQueueFile });
     this.reminderQueue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
+    this.reminderConfigStore = new ReminderConfigStore({ filePath: config.reminderConfigFile });
     this.memoryService = new MemoryService(config);
     this.memoryService.initialize();
     this.memoryResolver = new MemoryResolver({ memoryService: this.memoryService });
@@ -342,8 +345,20 @@ class CyberbossApp {
       return;
     }
 
+    this.acknowledgeInteractiveRemindersForSender(normalized);
     this.primeDeferredRepliesForSender(normalized);
     await this.handlePreparedMessage(normalized, { allowCommands: true });
+  }
+
+  acknowledgeInteractiveRemindersForSender(normalized) {
+    if (!normalized?.accountId || !normalized?.senderId) {
+      return [];
+    }
+    return this.reminderQueue.acknowledgeForSender(
+      normalized.accountId,
+      normalized.senderId,
+      normalized.receivedAt || new Date().toISOString(),
+    );
   }
 
   deferSystemReply({ threadId = "", userId = "", text = "", error = null, kind = "plain_reply" }) {
@@ -1057,6 +1072,10 @@ class CyberbossApp {
       .filter((reminder) => reminder.accountId === account.accountId);
 
     for (const reminder of dueReminders) {
+      if (reminder.kind === "interactive") {
+        await this.flushInteractiveReminder(reminder);
+        continue;
+      }
       try {
         this.systemMessageQueue.enqueue({
           id: `reminder:${reminder.id}`,
@@ -1072,6 +1091,34 @@ class CyberbossApp {
           dueAtMs: Date.now() + 5_000,
         });
       }
+    }
+  }
+
+  async flushInteractiveReminder(reminder) {
+    const nowMs = Date.now();
+    const promptCount = Math.max(0, Number.parseInt(String(reminder.promptCount || 0), 10) || 0);
+    const maxTimes = Math.max(1, Number.parseInt(String(reminder.maxTimes || 0), 10) || 1);
+    const intervalMs = Math.max(1_000, Number.parseInt(String(reminder.intervalMs || 0), 10) || 3 * 60_000);
+    try {
+      await this.channelAdapter.sendText({
+        userId: reminder.senderId,
+        text: `⏰ 提醒：${reminder.text}`,
+        contextToken: this.channelAdapter.getKnownContextTokens?.()[reminder.senderId] || reminder.contextToken,
+      });
+      const nextPromptCount = promptCount + 1;
+      if (nextPromptCount < maxTimes) {
+        this.reminderQueue.enqueue({
+          ...reminder,
+          promptCount: nextPromptCount,
+          dueAtMs: nowMs + intervalMs,
+          lastPromptAt: new Date(nowMs).toISOString(),
+        });
+      }
+    } catch {
+      this.reminderQueue.enqueue({
+        ...reminder,
+        dueAtMs: nowMs + 5_000,
+      });
     }
   }
 
@@ -1129,6 +1176,9 @@ class CyberbossApp {
         return;
       case "chunk":
         await this.handleChunkCommand(normalized, command);
+        return;
+      case "remind":
+        await this.handleRemindCommand(normalized, command);
         return;
       case "yes":
       case "always":
@@ -1530,6 +1580,126 @@ class CyberbossApp {
     });
   }
 
+  async handleRemindCommand(normalized, command) {
+    const args = normalizeCommandArgument(command.args);
+    const accountId = normalizeCommandArgument(normalized.accountId || this.activeAccountId);
+    if (!args) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: this.buildRemindUsageText(accountId),
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+
+    const [subcommand, ...rest] = args.split(/\s+/);
+    if (subcommand === "interval") {
+      await this.handleRemindIntervalCommand(normalized, accountId, rest.join(" "));
+      return;
+    }
+    if (subcommand === "maxtimes") {
+      await this.handleRemindMaxTimesCommand(normalized, accountId, rest.join(" "));
+      return;
+    }
+
+    const delayMs = parseDelay(subcommand);
+    const task = rest.join(" ").trim();
+    if (!delayMs || !task || !accountId) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: "💡 Usage: /remind <time> <task>",
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+
+    const reminderConfig = this.reminderConfigStore.getAccountConfig(accountId);
+    this.reminderQueue.enqueue({
+      id: crypto.randomUUID(),
+      kind: "interactive",
+      accountId,
+      senderId: normalized.senderId,
+      contextToken: normalized.contextToken,
+      text: task,
+      dueAtMs: Date.now() + delayMs,
+      createdAt: new Date().toISOString(),
+      promptCount: 0,
+      intervalMs: reminderConfig.intervalMs,
+      maxTimes: reminderConfig.maxTimes,
+    });
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: `✅ Reminder set for ${formatDuration(delayMs)} later: ${task}`,
+      contextToken: normalized.contextToken,
+    });
+  }
+
+  async handleRemindIntervalCommand(normalized, accountId, rawValue) {
+    const value = normalizeCommandArgument(rawValue);
+    if (!value) {
+      const current = this.reminderConfigStore.getAccountConfig(accountId);
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `⏰ Current reminder follow-up interval is ${formatDuration(current.intervalMs)}. Usage: /remind interval <time>`,
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    const intervalMs = parseDelay(value);
+    if (!intervalMs || !accountId) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: "💡 Usage: /remind interval <time>",
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    this.reminderConfigStore.setAccountInterval(accountId, intervalMs);
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: `✅ Reminder follow-up interval set to ${formatDuration(intervalMs)}.`,
+      contextToken: normalized.contextToken,
+    });
+  }
+
+  async handleRemindMaxTimesCommand(normalized, accountId, rawValue) {
+    const value = normalizeCommandArgument(rawValue);
+    if (!value) {
+      const current = this.reminderConfigStore.getAccountConfig(accountId);
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `⏰ Current reminder max follow-up times is ${current.maxTimes}. Usage: /remind maxtimes <number>`,
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    const maxTimes = Number.parseInt(value, 10);
+    if (!/^[1-9]\d*$/.test(value) || !Number.isFinite(maxTimes)) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: "💡 Usage: /remind maxtimes <number>",
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    this.reminderConfigStore.setAccountMaxTimes(accountId, maxTimes);
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: `✅ Reminder max follow-up times set to ${maxTimes}.`,
+      contextToken: normalized.contextToken,
+    });
+  }
+
+  buildRemindUsageText(accountId) {
+    const current = this.reminderConfigStore.getAccountConfig(accountId);
+    return [
+      "💡 Usage: /remind <time> <task>",
+      "Examples: /remind 5m 睡觉",
+      `/remind interval <time> (current: ${formatDuration(current.intervalMs)})`,
+      `/remind maxtimes <number> (current: ${current.maxTimes})`,
+    ].join("\n");
+  }
+
   async handleApprovalCommand(normalized, command) {
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
@@ -1684,8 +1854,11 @@ class CyberbossApp {
     }
     if (event.type === "runtime.turn.completed" || event.type === "runtime.turn.failed") {
       const completedRunKey = buildRunKey(event.payload.threadId, event.payload.turnId);
-      const memoryTurn = this.memoryTurnMetadataByRunKey.get(completedRunKey) || null;
-      this.memoryTurnMetadataByRunKey.delete(completedRunKey);
+      const memoryTurns = this.memoryTurnMetadataByRunKey;
+      const memoryTurn = memoryTurns?.get?.(completedRunKey) || null;
+      if (memoryTurns?.delete) {
+        memoryTurns.delete(completedRunKey);
+      }
       if (event.type === "runtime.turn.completed" && memoryTurn) {
         void this.handleMemoryTurnFinished(memoryTurn).catch((error) => {
           console.error(`[cyberboss] memory post-response failed: ${error.message}`);
@@ -2214,6 +2387,30 @@ function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function formatDuration(ms) {
+  const totalMs = Number.parseInt(String(ms || ""), 10);
+  if (!Number.isFinite(totalMs) || totalMs <= 0) {
+    return "0s";
+  }
+  const units = [
+    ["d", 24 * 60 * 60_000],
+    ["h", 60 * 60_000],
+    ["m", 60_000],
+    ["s", 1_000],
+  ];
+  let remainingMs = totalMs;
+  const parts = [];
+  for (const [label, unitMs] of units) {
+    const amount = Math.floor(remainingMs / unitMs);
+    if (!amount) {
+      continue;
+    }
+    parts.push(`${amount}${label}`);
+    remainingMs -= amount * unitMs;
+  }
+  return parts.join("") || `${Math.ceil(totalMs / 1_000)}s`;
+}
+
 function normalizeIsoTime(value) {
   const normalized = normalizeText(value);
   if (!normalized) {
@@ -2236,8 +2433,22 @@ function matchesBuiltInCommandPrefix(commandTokens) {
     return true;
   }
 
-   if (normalized[0] === "mcp_tool" && normalized[1] === "cyberboss_tools") {
+  if (normalized[0] === "mcp_tool" && normalized[1] === "cyberboss_tools") {
     return true;
+  }
+
+  if (normalized[0] === "cyberboss" && normalized[1] === "timeline") {
+    return [
+      "categories",
+      "proposals",
+      "read",
+      "write",
+      "build",
+      "serve",
+      "dev",
+      "screenshot",
+      "help",
+    ].includes(normalized[2]);
   }
 
   return false;

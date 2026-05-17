@@ -151,7 +151,7 @@ test("claudecode assistant events map usage into context snapshots", () => {
   assert.equal(event.payload.currentTokens, 27201);
 });
 
-test("handleRuntimeEvent prompts for project shell commands instead of auto-approving them", async () => {
+test("handleRuntimeEvent prompts for non-timeline project shell commands instead of auto-approving them", async () => {
   const prompts = [];
   const appLike = {
     streamDelivery: {
@@ -190,7 +190,7 @@ test("handleRuntimeEvent prompts for project shell commands instead of auto-appr
     payload: {
       threadId: "thread-1",
       requestId: "req-3",
-      commandTokens: ["cyberboss", "timeline", "write", "--date", "2026-04-17"],
+      commandTokens: ["cyberboss", "accounts"],
     },
   });
 
@@ -570,6 +570,98 @@ test("handleRuntimeEvent auto-approves project-native MCP tool approvals without
   });
 
   assert.deepEqual(responses, [{ requestId: "req-project-tool", decision: "accept" }]);
+});
+
+test("handleRuntimeEvent auto-approves project-native timeline CLI approvals without prompting", async () => {
+  const responses = [];
+  const appLike = {
+    config: { stateDir: path.join(os.tmpdir(), "cyberboss-approval-test") },
+    streamDelivery: {
+      async handleRuntimeEvent() {},
+    },
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          clearApprovalPrompt() {},
+          findBindingForThreadId() {
+            return { bindingKey: "binding-1", workspaceRoot: "/workspace" };
+          },
+          getApprovalCommandAllowlistForWorkspace() {
+            return [];
+          },
+        };
+      },
+      async respondApproval(payload) {
+        responses.push(payload);
+      },
+    },
+    threadStateStore: {
+      resolveApproval() {},
+    },
+    async sendApprovalPrompt() {
+      throw new Error("should not prompt for project-native timeline CLI commands");
+    },
+  };
+
+  await CyberbossApp.prototype.handleRuntimeEvent.call(appLike, {
+    type: "runtime.approval.requested",
+    payload: {
+      threadId: "thread-1",
+      requestId: "req-timeline-cli",
+      commandTokens: ["node", "/workspace/bin/cyberboss.js", "timeline", "write", "--date", "2026-05-17"],
+    },
+  });
+
+  assert.deepEqual(responses, [{ requestId: "req-timeline-cli", decision: "accept" }]);
+});
+
+test("handleRuntimeEvent does not auto-approve non-timeline cyberboss CLI approvals", async () => {
+  const responses = [];
+  const prompts = [];
+  const appLike = {
+    config: { stateDir: path.join(os.tmpdir(), "cyberboss-approval-test") },
+    streamDelivery: {
+      async handleRuntimeEvent() {},
+    },
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          clearApprovalPrompt() {},
+          findBindingForThreadId() {
+            return { bindingKey: "binding-1", workspaceRoot: "/workspace" };
+          },
+          getApprovalCommandAllowlistForWorkspace() {
+            return [];
+          },
+          getApprovalPromptState() {
+            return null;
+          },
+          rememberApprovalPrompt() {},
+        };
+      },
+      async respondApproval(payload) {
+        responses.push(payload);
+      },
+    },
+    threadStateStore: {
+      resolveApproval() {},
+    },
+    async sendApprovalPrompt(payload) {
+      prompts.push(payload);
+    },
+  };
+
+  await CyberbossApp.prototype.handleRuntimeEvent.call(appLike, {
+    type: "runtime.approval.requested",
+    payload: {
+      threadId: "thread-1",
+      requestId: "req-non-timeline-cli",
+      commandTokens: ["node", "/workspace/bin/cyberboss.js", "accounts"],
+    },
+  });
+
+  assert.deepEqual(responses, []);
+  assert.equal(prompts.length, 1);
 });
 
 test("handleRuntimeEvent auto-approves inbox image reads for claudecode without prompting", async () => {

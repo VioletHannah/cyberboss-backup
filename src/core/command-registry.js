@@ -135,6 +135,13 @@ const COMMAND_GROUPS = [
         weixin: ["/chunk <number>"],
         status: "active",
       },
+      {
+        action: "reminder.interactive",
+        summary: "Set a WeChat reminder that keeps asking until the user replies",
+        terminal: [],
+        weixin: ["/remind <time> <task>", "/remind interval <time>", "/remind maxtimes <number>"],
+        status: "active",
+      },
     ],
   },
   {
@@ -336,6 +343,7 @@ function actionEmoji(action) {
     case "thread.switch": return "🔀";
     case "thread.stop": return "⏹️";
     case "system.checkin_range": return "⏰";
+    case "reminder.interactive": return "⏰";
     case "approval.accept_once": return "✅";
     case "approval.accept_workspace": return "💡";
     case "approval.reject_once": return "❌";
