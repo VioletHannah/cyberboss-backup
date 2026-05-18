@@ -4,6 +4,7 @@ const {
   STICKER_DESC_FIELD_DESCRIPTION,
   STICKER_TAG_GUIDANCE,
 } = require("../services/sticker-service");
+const { APP_USAGE_TOOLS } = require("../appUsage/mcpTools");
 
 class ProjectToolHost {
   constructor({ services, runtimeContextStore }) {
@@ -13,7 +14,7 @@ class ProjectToolHost {
   }
 
   listTools() {
-    const builtIn = PROJECT_TOOLS.map((tool) => ({
+    const builtIn = ALL_PROJECT_TOOLS.map((tool) => ({
       name: tool.name,
       description: buildToolDescription(tool),
       inputSchema: tool.inputSchema,
@@ -23,7 +24,7 @@ class ProjectToolHost {
   }
 
   async invokeTool(toolName, args = {}, context = {}) {
-    const spec = PROJECT_TOOLS.find((candidate) => candidate.name === toolName);
+    const spec = ALL_PROJECT_TOOLS.find((candidate) => candidate.name === toolName);
     const normalizedArgs = args && typeof args === "object" ? args : {};
     if (spec) {
       validateSchema(spec.inputSchema, normalizedArgs, toolName, "input");
@@ -63,6 +64,7 @@ class ProjectToolHost {
 function listProjectToolNames() {
   return [
     ...PROJECT_TOOLS.map((tool) => tool.name),
+    ...APP_USAGE_TOOLS.map((tool) => tool.name),
     ...STATIC_EXTRA_TOOL_NAMES,
   ];
 }
@@ -544,6 +546,11 @@ const PROJECT_TOOLS = [
       };
     },
   },
+];
+
+const ALL_PROJECT_TOOLS = [
+  ...PROJECT_TOOLS,
+  ...APP_USAGE_TOOLS,
 ];
 
 const STATIC_EXTRA_TOOL_NAMES = new WhereaboutsToolHost({ service: null })

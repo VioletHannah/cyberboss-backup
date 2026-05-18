@@ -165,6 +165,10 @@ CYBERBOSS_LOCATION_WORK_CENTER=
 CYBERBOSS_LOCATION_KNOWN_PLACES=
 CYBERBOSS_LOCATION_PLACE_RADIUS_METERS=150
 CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
+CYBERBOSS_ENABLE_APP_USAGE_SERVER=true
+APP_USAGE_HOST=0.0.0.0
+APP_USAGE_PORT=4319
+APP_USAGE_TOKEN=your_secret_token
 ```
 
 这些变量的作用：
@@ -209,6 +213,14 @@ CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
   地点标签识别半径，默认 `150`。
 - `CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT`
   电量观测保留数量，默认 `100`。
+- `CYBERBOSS_ENABLE_APP_USAGE_SERVER`
+  是否启动 APP 使用状态 HTTP 接收服务。`start` 模式下默认启用；设为 `false` 可关闭。
+- `APP_USAGE_HOST` / `CYBERBOSS_APP_USAGE_HOST`
+  APP 使用状态 HTTP 服务监听地址，默认 `0.0.0.0`。
+- `APP_USAGE_PORT` / `CYBERBOSS_APP_USAGE_PORT`
+  APP 使用状态 HTTP 服务端口，默认 `4319`。
+- `APP_USAGE_TOKEN`
+  APP 使用状态上报接口的 Bearer token。未设置时允许无 token，并会在启动时打印 warning。
 
 
 `CYBERBOSS_ALLOWED_USER_IDS` 支持逗号分隔多个 user id。
@@ -395,6 +407,137 @@ ${HOME}/.cyberboss
 - 内置服务默认监听 `http://0.0.0.0:4318`，上传接口是 `POST /location/ingest`，健康检查是 `GET /healthz`。
 - 行踪数据默认写入 `~/.cyberboss/locations.json`，不是写进项目目录。
 
+### APP 使用状态上报
+
+- Cyberboss 会在 `start` 模式下默认启动 APP 使用状态接收服务，接口是 `POST /api/app-usage/event`，默认监听 `http://0.0.0.0:4319`。
+- 数据只短期保存在 JSON 文件里：`~/.cyberboss/app_usage/current_state.json` 和 `~/.cyberboss/app_usage/events.json`。
+- `events.json` 最多保留最近 500 条事件；每天凌晨 3 点后，收到事件或查询时会清空前一天及更早事件。`current_state.json` 不会清空。
+- 建议设置 `APP_USAGE_TOKEN=your_secret_token`，然后手机端用 `Authorization: Bearer your_secret_token` 上报。
+
+curl 测试：
+
+```bash
+curl -X POST http://localhost:4319/api/app-usage/event \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_secret_token" \
+  -d '{
+    "device_id": "phone_1",
+    "app_package": "com.tencent.mm",
+    "app_name": "WeChat",
+    "event": "app_open"
+  }'
+
+curl -X POST http://localhost:4319/api/app-usage/event \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_secret_token" \
+  -d '{
+    "device_id": "phone_1",
+    "app_package": "com.tencent.mm",
+    "app_name": "WeChat",
+    "event": "app_heartbeat"
+  }'
+
+curl -X POST http://localhost:4319/api/app-usage/event \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_secret_token" \
+  -d '{
+    "device_id": "phone_1",
+    "app_package": "com.tencent.mm",
+    "app_name": "WeChat",
+    "event": "app_close"
+  }'
+
+curl -X POST http://localhost:4319/api/app-usage/event \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_secret_token" \
+  -d '{
+    "device_id": "phone_1",
+    "event": "screen_off"
+  }'
+
+curl -X POST http://localhost:4319/api/app-usage/event \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_secret_token" \
+  -d '{
+    "device_id": "phone_1",
+    "event": "untracked_app_foreground"
+  }'
+```
+
+MacroDroid HTTP POST 示例：
+
+- URL：`https://你的服务器域名/api/app-usage/event`
+- Headers：
+  - `Content-Type: application/json`
+  - `Authorization: Bearer your_secret_token`
+- APP 打开 Body：
+
+```json
+{
+  "device_id": "phone_1",
+  "app_package": "{app_package}",
+  "app_name": "{app_name}",
+  "event": "app_open",
+  "timestamp": "{year}-{month_digit}-{dayofmonth}T{hour24}:{minute}:{second}+09:00"
+}
+```
+
+- APP 离开前台 Body：
+
+```json
+{
+  "device_id": "phone_1",
+  "app_package": "{app_package}",
+  "app_name": "{app_name}",
+  "event": "app_close",
+  "timestamp": "{year}-{month_digit}-{dayofmonth}T{hour24}:{minute}:{second}+09:00"
+}
+```
+
+- 使用中心跳 Body：
+
+```json
+{
+  "device_id": "phone_1",
+  "app_package": "{app_package}",
+  "app_name": "{app_name}",
+  "event": "app_heartbeat",
+  "timestamp": "{year}-{month_digit}-{dayofmonth}T{hour24}:{minute}:{second}+09:00"
+}
+```
+
+- 锁屏 Body：
+
+```json
+{
+  "device_id": "phone_1",
+  "event": "screen_off",
+  "timestamp": "{year}-{month_digit}-{dayofmonth}T{hour24}:{minute}:{second}+09:00"
+}
+```
+
+- 亮屏 Body：
+
+```json
+{
+  "device_id": "phone_1",
+  "event": "screen_on",
+  "timestamp": "{year}-{month_digit}-{dayofmonth}T{hour24}:{minute}:{second}+09:00"
+}
+```
+
+- 正在使用手机，但前台 APP 不在监控列表 Body：
+
+```json
+{
+  "device_id": "phone_1",
+  "event": "untracked_app_foreground",
+  "timestamp": "{year}-{month_digit}-{dayofmonth}T{hour24}:{minute}:{second}+09:00"
+}
+```
+
+MacroDroid 变量名可能因动作或版本不同而变化；把示例里的 `{app_package}`、`{app_name}` 和时间变量替换成你本机 MacroDroid 实际可用的变量即可。
+
 ### 表情包说明
 
 - 当前这条微信桥链路里，微信出入站都不能把动图展示能力当成可靠前提。不要假设发出去或收进来的 GIF 会在聊天窗口里正常播放。
@@ -422,6 +565,10 @@ ${HOME}/.cyberboss
 - `whereabouts_recent_moves`
 - `whereabouts_snapshot`
 - `whereabouts_summary`
+- `get_current_app_usage`
+- `get_recent_app_usage_events`
+- `get_app_usage_summary`
+- `get_phone_presence_status`
 - `cyberboss_sticker_tags`
 - `cyberboss_sticker_pick`
 - `cyberboss_sticker_send`

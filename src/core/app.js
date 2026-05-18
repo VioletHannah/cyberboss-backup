@@ -43,6 +43,7 @@ const {
 } = require("../adapters/runtime/shared/approval-command");
 const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
+const { AppUsageHttpServer } = require("../appUsage/server");
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MIN_LONG_POLL_TIMEOUT_MS = 2_000;
 const SESSION_EXPIRED_ERRCODE = -14;
@@ -72,6 +73,7 @@ class CyberbossApp {
     });
     this.projectServices = projectTooling.services;
     this.projectToolHost = projectTooling.toolHost;
+    this.appUsageHttpServer = null;
     this.runtimeContextStore = projectTooling.runtimeContextStore;
     this.runtimeAdapter = createRuntimeAdapter(config);
     this.threadStateStore = new ThreadStateStore();
@@ -164,6 +166,9 @@ class CyberbossApp {
     if (this.config.startWithLocationServer) {
       await this.ensureLocationServerStarted();
     }
+    if (this.config.startWithAppUsageServer) {
+      await this.ensureAppUsageServerStarted();
+    }
     console.log("[cyberboss] bridge loop started; waiting for WeChat messages.");
     if (this.config.startWithCheckin) {
       console.log("[cyberboss] checkin: enabled");
@@ -174,6 +179,7 @@ class CyberbossApp {
 
     const shutdown = createShutdownController(async () => {
       this.clearPendingImageInboundTimers();
+      await this.closeAppUsageServer();
       await this.closeLocationServer();
       await this.runtimeAdapter.close();
     });
@@ -224,6 +230,7 @@ class CyberbossApp {
     } finally {
       shutdown.dispose();
       this.clearPendingImageInboundTimers();
+      await this.closeAppUsageServer();
       await this.closeLocationServer();
       await this.runtimeAdapter.close();
     }
@@ -247,6 +254,31 @@ class CyberbossApp {
       return;
     }
     await this.projectServices.whereabouts.closeServer();
+  }
+
+  async ensureAppUsageServerStarted() {
+    if (!this.projectServices?.appUsage) {
+      return null;
+    }
+    this.appUsageHttpServer = new AppUsageHttpServer({
+      service: this.projectServices.appUsage,
+      host: this.config.appUsageHost,
+      port: this.config.appUsagePort,
+      token: this.config.appUsageToken,
+    });
+    await this.appUsageHttpServer.start();
+    console.log(
+      `[cyberboss] appUsageServer=http://${this.config.appUsageHost}:${this.config.appUsagePort} store=${this.config.appUsageDir}`
+    );
+    return this.appUsageHttpServer.server || null;
+  }
+
+  async closeAppUsageServer() {
+    if (!this.appUsageHttpServer) {
+      return;
+    }
+    await this.appUsageHttpServer.close();
+    this.appUsageHttpServer = null;
   }
 
   handleLocationAccepted(result) {

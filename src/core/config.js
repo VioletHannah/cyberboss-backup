@@ -64,6 +64,14 @@ function readConfig() {
       mode,
       enabled: readOptionalBoolEnv("CYBERBOSS_ENABLE_LOCATION_SERVER"),
     }),
+    appUsageDir: path.join(stateDir, "app_usage"),
+    appUsageHost: readTextEnv("APP_USAGE_HOST") || readTextEnv("CYBERBOSS_APP_USAGE_HOST") || "0.0.0.0",
+    appUsagePort: readIntEnv("APP_USAGE_PORT") || readIntEnv("CYBERBOSS_APP_USAGE_PORT") || 4319,
+    appUsageToken: readTextEnv("APP_USAGE_TOKEN"),
+    startWithAppUsageServer: resolveAppUsageServerEnabled({
+      mode,
+      enabled: readOptionalBoolEnv("CYBERBOSS_ENABLE_APP_USAGE_SERVER"),
+    }),
     syncBufferDir: path.join(stateDir, "sync-buffers"),
     codexEndpoint: readTextEnv("CYBERBOSS_CODEX_ENDPOINT"),
     codexCommand: readTextEnv("CYBERBOSS_CODEX_COMMAND"),
@@ -165,6 +173,16 @@ function resolveLocationServerEnabled({ mode, enabled }) {
     return enabled;
   }
   return false;
+}
+
+function resolveAppUsageServerEnabled({ mode, enabled }) {
+  if (mode !== "start") {
+    return false;
+  }
+  if (typeof enabled === "boolean") {
+    return enabled;
+  }
+  return true;
 }
 
 module.exports = { readConfig };

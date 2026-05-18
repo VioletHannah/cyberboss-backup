@@ -143,6 +143,44 @@ function createHost() {
           return { outputFile: "/tmp/shot.png", ...args };
         },
       },
+      appUsage: {
+        async getCurrentAppUsage(args) {
+          return {
+            ok: true,
+            device_id: args.device_id || "default_phone",
+            screen_status: "on",
+            phone_status: "using_phone",
+            current_app: {
+              app_package: "com.tencent.mm",
+              app_name: "WeChat",
+              status: "using",
+              confidence: "high",
+            },
+          };
+        },
+        async getRecentAppUsageEvents(args) {
+          return {
+            ok: true,
+            device_id: args.device_id || "default_phone",
+            events: [{ event: "app_open", app_package: "com.tencent.mm" }],
+          };
+        },
+        async getAppUsageSummary(args) {
+          return {
+            ok: true,
+            device_id: args.device_id || "default_phone",
+            total_usage_minutes: 10,
+            apps: [{ app_package: "com.tencent.mm", usage_minutes: 10 }],
+          };
+        },
+        async getPhonePresenceStatus(args) {
+          return {
+            ok: true,
+            device_id: args.device_id || "default_phone",
+            presence: "busy",
+          };
+        },
+      },
       whereabouts: {
         getSnapshot(args) {
           return {
@@ -318,6 +356,25 @@ test("tool host exposes whereabouts tools from the external dependency", async (
   assert.equal(snapshotResult.data.currentStay.address, "Office");
   assert.equal(snapshotResult.data.recentStays.length, 1);
   assert.equal(summaryResult.data.mobilityState.state, "staying");
+});
+
+test("tool host exposes app usage tools", async () => {
+  const host = createHost();
+  const tools = host.listTools();
+  assert.ok(tools.find((tool) => tool.name === "get_current_app_usage"));
+  assert.ok(tools.find((tool) => tool.name === "get_recent_app_usage_events"));
+  assert.ok(tools.find((tool) => tool.name === "get_app_usage_summary"));
+  assert.ok(tools.find((tool) => tool.name === "get_phone_presence_status"));
+
+  const current = await host.invokeTool("get_current_app_usage", { device_id: "phone_1" }, {});
+  const recent = await host.invokeTool("get_recent_app_usage_events", { limit: 5 }, {});
+  const summary = await host.invokeTool("get_app_usage_summary", {}, {});
+  const presence = await host.invokeTool("get_phone_presence_status", {}, {});
+
+  assert.equal(current.device_id, "phone_1");
+  assert.equal(recent.events[0].event, "app_open");
+  assert.equal(summary.total_usage_minutes, 10);
+  assert.equal(presence.presence, "busy");
 });
 
 test("tool host rejects timeline events without title or eventNodeId", async () => {

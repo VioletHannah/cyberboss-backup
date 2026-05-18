@@ -10,6 +10,8 @@ const { TimelineService } = require("../services/timeline-service");
 const { RuntimeContextStore } = require("./runtime-context-store");
 const { ProjectToolHost } = require("./tool-host");
 const { WhereaboutsService } = require("whereabouts-mcp");
+const { AppUsageStore } = require("../appUsage/store");
+const { AppUsageService } = require("../appUsage/service");
 
 function createProjectTooling(config, options = {}) {
   const sessionStore = options.sessionStore || new SessionStore({
@@ -29,6 +31,9 @@ function createProjectTooling(config, options = {}) {
     channelFile,
     sticker: new StickerService({ config, channelAdapter, sessionStore, channelFileService: channelFile }),
     timeline: new TimelineService({ config, timelineIntegration, sessionStore }),
+    appUsage: new AppUsageService({
+      store: new AppUsageStore({ dir: config.appUsageDir }),
+    }),
     whereabouts: new WhereaboutsService({
       config: {
         storeFile: config.locationStoreFile,
