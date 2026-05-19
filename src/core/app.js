@@ -27,6 +27,7 @@ const { ReminderQueueStore } = require("../adapters/channel/weixin/reminder-queu
 const { ReminderConfigStore } = require("./reminder-config-store");
 const { parseDelay } = require("../services/reminder-service");
 const { MemoryService } = require("../services/memory-service");
+const { ConversationRecorder } = require("../services/conversation-recorder");
 const { MemoryResolver, injectMemoryPrompt } = require("./memory-resolver");
 const { MemoryValidator } = require("./memory-validator");
 const { extractMemoryCandidates } = require("./memory-candidate-extractor");
@@ -83,6 +84,7 @@ class CyberbossApp {
     this.timelineScreenshotQueue = new TimelineScreenshotQueueStore({ filePath: config.timelineScreenshotQueueFile });
     this.reminderQueue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
     this.reminderConfigStore = new ReminderConfigStore({ filePath: config.reminderConfigFile });
+    this.conversationRecorder = new ConversationRecorder({ dirPath: config.conversationDir });
     this.memoryService = new MemoryService(config);
     this.memoryService.initialize();
     this.memoryResolver = new MemoryResolver({ memoryService: this.memoryService });
@@ -107,6 +109,7 @@ class CyberbossApp {
     this.pendingRuntimeEventWatchdogs = new Map();
     this.pendingOperationByRunKey = new Map();
     this.memoryTurnMetadataByRunKey = new Map();
+    this.recordedReplyRunKeys = new Set();
     this.runtimeEventChain = Promise.resolve();
     this.runtimeAdapter.onEvent((event) => {
       this.clearRuntimeEventWatchdog(event?.payload?.threadId);
@@ -119,6 +122,29 @@ class CyberbossApp {
           console.error(`[cyberboss] runtime event handling failed type=${event?.type || "(unknown)"} ${message}`);
         });
     });
+  }
+
+  recordRuntimeEventForDashboard(event) {
+    if (!event?.type) {
+      return;
+    }
+    const runKey = buildRunKey(event?.payload?.threadId, event?.payload?.turnId);
+    if (event.type === "runtime.reply.completed") {
+      this.recordedReplyRunKeys.add(runKey);
+    } else if (event.type === "runtime.turn.completed") {
+      if (this.recordedReplyRunKeys.has(runKey) || !normalizeText(event?.payload?.text)) {
+        return;
+      }
+    }
+
+    try {
+      const linked = this.runtimeAdapter.getSessionStore().findBindingForThreadId(event?.payload?.threadId);
+      this.conversationRecorder.recordRuntimeEvent(event, {
+        workspaceRoot: linked?.workspaceRoot || this.config.workspaceRoot,
+      });
+    } catch (error) {
+      console.error(`[cyberboss] conversation runtime record failed: ${error.message}`);
+    }
   }
 
   printDoctor() {
@@ -507,6 +533,14 @@ class CyberbossApp {
           senderId: prepared.senderId,
         },
       });
+      if (typeof this.recordInboundMessageForDashboard === "function") {
+        this.recordInboundMessageForDashboard({
+          prepared,
+          workspaceRoot,
+          threadId: turn.threadId,
+          turnId: turn.turnId,
+        });
+      }
       this.runtimeContextStore?.setActiveContext?.({
         workspaceRoot,
         runtimeId: this.runtimeAdapter.describe().id,
@@ -565,6 +599,30 @@ class CyberbossApp {
         contextToken: prepared.contextToken,
       }).catch(() => {});
       return false;
+    }
+  }
+
+  recordInboundMessageForDashboard({ prepared = null, workspaceRoot = "", threadId = "", turnId = "" } = {}) {
+    try {
+      this.conversationRecorder.recordInboundMessage({
+        threadId,
+        turnId,
+        workspaceRoot,
+        text: prepared?.originalText || prepared?.text || "",
+        timestamp: prepared?.receivedAt,
+        meta: {
+          workspaceId: prepared?.workspaceId || "",
+          accountId: prepared?.accountId || "",
+          senderId: prepared?.senderId || "",
+          messageId: prepared?.messageId || "",
+          provider: prepared?.provider || "",
+          contextToken: prepared?.contextToken || "",
+          attachments: Array.isArray(prepared?.attachments) ? prepared.attachments : [],
+          attachmentFailures: Array.isArray(prepared?.attachmentFailures) ? prepared.attachmentFailures : [],
+        },
+      });
+    } catch (error) {
+      console.error(`[cyberboss] conversation record failed: ${error.message}`);
     }
   }
 
@@ -1884,8 +1942,12 @@ class CyberbossApp {
     if (!event) {
       return;
     }
+    if (typeof this.recordRuntimeEventForDashboard === "function") {
+      this.recordRuntimeEventForDashboard(event);
+    }
     if (event.type === "runtime.turn.completed" || event.type === "runtime.turn.failed") {
       const completedRunKey = buildRunKey(event.payload.threadId, event.payload.turnId);
+      this.recordedReplyRunKeys?.delete?.(completedRunKey);
       const memoryTurns = this.memoryTurnMetadataByRunKey;
       const memoryTurn = memoryTurns?.get?.(completedRunKey) || null;
       if (memoryTurns?.delete) {

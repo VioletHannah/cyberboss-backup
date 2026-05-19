@@ -17,6 +17,15 @@ async function createService() {
   return { dir, service };
 }
 
+function todayAt(hour, minute = 0) {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0).toISOString();
+}
+
+function minutesAgo(minutes) {
+  return new Date(Date.now() - minutes * 60 * 1000).toISOString();
+}
+
 test("app usage service records events and exposes current usage", async () => {
   const { service } = await createService();
   const result = await service.recordAppUsageEvent({
@@ -24,7 +33,7 @@ test("app usage service records events and exposes current usage", async () => {
     app_package: "com.tencent.mm",
     app_name: "WeChat",
     event: "app_open",
-    timestamp: "2026-05-17T23:10:00+08:00",
+    timestamp: minutesAgo(10),
   });
   assert.deepEqual(result, { ok: true });
 
@@ -47,27 +56,27 @@ test("app usage service summarizes open close and heartbeat durations", async ()
     app_package: "com.tencent.mm",
     app_name: "WeChat",
     event: "app_open",
-    timestamp: "2026-05-17T10:00:00+08:00",
+    timestamp: todayAt(10, 0),
   });
   await service.recordAppUsageEvent({
     device_id: "phone_1",
     app_package: "com.tencent.mm",
     app_name: "WeChat",
     event: "app_heartbeat",
-    timestamp: "2026-05-17T10:20:00+08:00",
+    timestamp: todayAt(10, 20),
   });
   await service.recordAppUsageEvent({
     device_id: "phone_1",
     app_package: "com.tencent.mm",
     app_name: "WeChat",
     event: "app_close",
-    timestamp: "2026-05-17T10:30:00+08:00",
+    timestamp: todayAt(10, 30),
   });
 
   const summary = await service.getAppUsageSummary({
     device_id: "phone_1",
-    from: "2026-05-17T00:00:00+08:00",
-    to: "2026-05-17T23:59:59+08:00",
+    from: todayAt(0, 0),
+    to: todayAt(23, 59),
   });
   assert.equal(summary.ok, true);
   assert.equal(summary.total_usage_minutes, 30);
