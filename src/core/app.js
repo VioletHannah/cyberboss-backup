@@ -55,6 +55,23 @@ const FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS = 8_000;
 const FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS = 45_000;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
+const SLEEP_INTENT_CONFIRMATION_MS = 3 * 60_000;
+const SLEEP_INTENT_KEYWORDS = [
+  "晚安",
+  "睡了",
+  "睡觉了",
+  "去睡了",
+  "去睡",
+  "我睡了",
+  "我睡啦",
+  "睡啦",
+  "goodnight",
+  "good night",
+  "sleep",
+  "going to bed",
+  "gonna sleep",
+  "night",
+];
 
 function createRuntimeAdapter(config) {
   if (config.runtime === "claudecode") {
@@ -97,6 +114,7 @@ class CyberbossApp {
     this.turnGateStore = new TurnGateStore();
     this.pendingInboundByScope = new Map();
     this.pendingImageInboundByScope = new Map();
+    this.pendingSleepIntentTimer = null;
     this.turnBoundaryScopeKeys = new Set();
     this.systemMessageDispatcher = null;
     this.streamDelivery = new StreamDelivery({
@@ -204,6 +222,7 @@ class CyberbossApp {
     }
 
     const shutdown = createShutdownController(async () => {
+      this.clearPendingSleepIntentTimer();
       this.clearPendingImageInboundTimers();
       await this.closeAppUsageServer();
       await this.closeLocationServer();
@@ -255,6 +274,7 @@ class CyberbossApp {
       }
     } finally {
       shutdown.dispose();
+      this.clearPendingSleepIntentTimer();
       this.clearPendingImageInboundTimers();
       await this.closeAppUsageServer();
       await this.closeLocationServer();
@@ -403,9 +423,79 @@ class CyberbossApp {
       return;
     }
 
+    this.handleCheckinSleepStateForIncomingMessage(normalized);
     this.acknowledgeInteractiveRemindersForSender(normalized);
     this.primeDeferredRepliesForSender(normalized);
     await this.handlePreparedMessage(normalized, { allowCommands: true });
+  }
+
+  handleCheckinSleepStateForIncomingMessage(normalized) {
+    const text = normalizeText(normalized?.text);
+    if (!text) {
+      return;
+    }
+    if (detectSleepIntent(text)) {
+      this.scheduleCheckinSleepConfirmation(normalized);
+      return;
+    }
+    this.clearPendingSleepIntentTimer();
+    if (this.checkinConfigStore?.isSleeping?.()) {
+      this.checkinConfigStore.setSleeping(false);
+      console.log("[cyberboss] checkin sleep mode disabled by user message");
+    }
+  }
+
+  scheduleCheckinSleepConfirmation(normalized) {
+    this.clearPendingSleepIntentTimer();
+    const triggeredAt = normalizeIsoTimestamp(normalized?.receivedAt) || new Date().toISOString();
+    const confirm = async () => {
+      this.pendingSleepIntentTimer = null;
+      const shouldSleep = await this.shouldConfirmSleepIntent(triggeredAt).catch((error) => {
+        console.warn(`[cyberboss] checkin sleep app usage check failed: ${formatErrorMessage(error)}`);
+        return true;
+      });
+      if (!shouldSleep) {
+        console.log("[cyberboss] checkin sleep mode not enabled: app usage changed after sleep intent");
+        return;
+      }
+      this.checkinConfigStore.setSleeping(true);
+      console.log("[cyberboss] checkin sleep mode enabled by user sleep intent");
+    };
+
+    if (!this.projectServices?.appUsage) {
+      void confirm();
+      return;
+    }
+    this.pendingSleepIntentTimer = setTimeout(() => {
+      void confirm();
+    }, SLEEP_INTENT_CONFIRMATION_MS);
+    if (typeof this.pendingSleepIntentTimer.unref === "function") {
+      this.pendingSleepIntentTimer.unref();
+    }
+  }
+
+  async shouldConfirmSleepIntent(triggeredAt) {
+    const service = this.projectServices?.appUsage;
+    if (!service || typeof service.getRecentAppUsageEvents !== "function") {
+      return true;
+    }
+    const result = await service.getRecentAppUsageEvents({ limit: 100 });
+    if (!result?.ok || !Array.isArray(result.events)) {
+      return true;
+    }
+    const triggeredAtMs = Date.parse(triggeredAt) || 0;
+    return !result.events.some((event) => {
+      const eventMs = Date.parse(String(event?.time || ""));
+      return eventMs > triggeredAtMs && event?.event !== "screen_off";
+    });
+  }
+
+  clearPendingSleepIntentTimer() {
+    if (!this.pendingSleepIntentTimer) {
+      return;
+    }
+    clearTimeout(this.pendingSleepIntentTimer);
+    this.pendingSleepIntentTimer = null;
   }
 
   acknowledgeInteractiveRemindersForSender(normalized) {
@@ -2372,7 +2462,20 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-module.exports = { CyberbossApp };
+function detectSleepIntent(text) {
+  const normalized = normalizeText(text).toLowerCase();
+  return normalized ? SLEEP_INTENT_KEYWORDS.some((keyword) => normalized.includes(keyword)) : false;
+}
+
+function normalizeIsoTimestamp(value) {
+  const date = value instanceof Date ? value : new Date(String(value || ""));
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toISOString();
+}
+
+module.exports = { CyberbossApp, detectSleepIntent };
 
 function parseChannelCommand(text) {
   const normalized = typeof text === "string" ? text.trim() : "";

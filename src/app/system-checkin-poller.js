@@ -2,7 +2,12 @@ const crypto = require("crypto");
 
 const { resolveSelectedAccount } = require("../adapters/channel/weixin/account-store");
 const { SessionStore } = require("../adapters/runtime/codex/session-store");
-const { CheckinConfigStore, resolveDefaultCheckinRange } = require("../core/checkin-config-store");
+const {
+  CheckinConfigStore,
+  isSleepHour,
+  resolveDefaultCheckinRange,
+  resolveDefaultSleepRange,
+} = require("../core/checkin-config-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("../core/default-targets");
 const { SystemMessageQueueStore } = require("../core/system-message-queue-store");
 
@@ -15,16 +20,23 @@ async function runSystemCheckinPoller(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile });
   const target = resolvePollerTarget({ config, account, sessionStore });
   const defaultRange = resolveDefaultCheckinRange();
+  const defaultSleepRange = resolveDefaultSleepRange();
   let currentRange = checkinConfigStore.getRange(defaultRange);
 
   console.log(`[cyberboss] checkin poller ready user=${target.senderId} workspace=${target.workspaceRoot}`);
   console.log(`[cyberboss] checkin interval range ${formatRangeMinutes(currentRange)}`);
+  console.log(`[cyberboss] checkin sleep interval range ${formatRangeMinutes(checkinConfigStore.getSleepRange(defaultSleepRange))}`);
 
   while (true) {
-    currentRange = checkinConfigStore.getRange(defaultRange);
+    const sleeping = checkinConfigStore.isSleeping();
+    const sleepHour = isSleepHour();
+    currentRange = sleeping || sleepHour
+      ? checkinConfigStore.getSleepRange(defaultSleepRange)
+      : checkinConfigStore.getRange(defaultRange);
     const delayMs = pickRandomDelayMs(currentRange.minIntervalMs, currentRange.maxIntervalMs);
     const wakeAt = formatLocalTime(Date.now() + delayMs);
-    console.log(`[cyberboss] next checkin in ${Math.round(delayMs / 60000)}m at ${wakeAt}`);
+    const mode = sleeping ? "sleep:user" : (sleepHour ? "sleep:hour" : "normal");
+    console.log(`[cyberboss] next checkin in ${Math.round(delayMs / 60000)}m at ${wakeAt} mode=${mode}`);
     await sleep(delayMs);
 
     if (queue.hasPendingForAccount(account.accountId)) {

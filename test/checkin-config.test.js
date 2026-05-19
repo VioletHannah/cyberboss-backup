@@ -8,9 +8,13 @@ const {
   CheckinConfigStore,
   DEFAULT_MIN_INTERVAL_MS,
   DEFAULT_MAX_INTERVAL_MS,
+  DEFAULT_SLEEP_MIN_INTERVAL_MS,
+  DEFAULT_SLEEP_MAX_INTERVAL_MS,
+  isSleepHour,
   parseCheckinRangeMinutes,
+  resolveDefaultSleepRange,
 } = require("../src/core/checkin-config-store");
-const { CyberbossApp } = require("../src/core/app");
+const { CyberbossApp, detectSleepIntent } = require("../src/core/app");
 
 function createStore() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-checkin-test-"));
@@ -35,6 +39,61 @@ test("checkin config store falls back to defaults and persists overrides", () =>
     minIntervalMs: 4 * 60_000,
     maxIntervalMs: 25 * 60_000,
   });
+});
+
+test("checkin config store persists sleep range and sleeping state independently", () => {
+  const store = createStore();
+  assert.deepEqual(store.getSleepRange(), {
+    minIntervalMs: DEFAULT_SLEEP_MIN_INTERVAL_MS,
+    maxIntervalMs: DEFAULT_SLEEP_MAX_INTERVAL_MS,
+  });
+
+  store.setSleeping(true, new Date("2026-05-18T02:30:00.000Z"));
+  store.setRange({ minIntervalMs: 4 * 60_000, maxIntervalMs: 25 * 60_000 });
+  assert.equal(store.isSleeping(), true);
+
+  const reloaded = new CheckinConfigStore({ filePath: store.filePath });
+  assert.deepEqual(reloaded.getRange(), {
+    minIntervalMs: 4 * 60_000,
+    maxIntervalMs: 25 * 60_000,
+  });
+  assert.equal(reloaded.isSleeping(), true);
+});
+
+test("checkin config store reads persisted sleep interval overrides", () => {
+  const store = createStore();
+  fs.writeFileSync(store.filePath, JSON.stringify({
+    minIntervalMs: 3 * 60_000,
+    maxIntervalMs: 60 * 60_000,
+    sleepMinIntervalMs: 5 * 60 * 60_000,
+    sleepMaxIntervalMs: 7 * 60 * 60_000,
+  }, null, 2));
+  assert.deepEqual(store.getSleepRange(), {
+    minIntervalMs: 5 * 60 * 60_000,
+    maxIntervalMs: 7 * 60 * 60_000,
+  });
+});
+
+test("resolveDefaultSleepRange reads sleep interval environment variables", () => {
+  assert.deepEqual(resolveDefaultSleepRange({
+    CYBERBOSS_CHECKIN_SLEEP_MIN_INTERVAL_MS: String(2 * 60 * 60_000),
+    CYBERBOSS_CHECKIN_SLEEP_MAX_INTERVAL_MS: String(3 * 60 * 60_000),
+  }), {
+    minIntervalMs: 2 * 60 * 60_000,
+    maxIntervalMs: 3 * 60 * 60_000,
+  });
+});
+
+test("isSleepHour uses Asia Shanghai hours", () => {
+  assert.equal(isSleepHour(new Date("2026-05-18T17:00:00.000Z")), true);
+  assert.equal(isSleepHour(new Date("2026-05-19T00:00:00.000Z")), false);
+});
+
+test("detectSleepIntent matches configured sleep phrases case-insensitively", () => {
+  assert.equal(detectSleepIntent("我准备睡觉了"), true);
+  assert.equal(detectSleepIntent("GOOD NIGHT"), true);
+  assert.equal(detectSleepIntent("going to bed now"), true);
+  assert.equal(detectSleepIntent("还在处理事情"), false);
 });
 
 test("handleCheckinCommand stores the new range and replies in English", async () => {
@@ -62,6 +121,68 @@ test("handleCheckinCommand stores the new range and replies in English", async (
   });
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, "✅ Check-in interval reset to 7-21 minutes and will apply on the next polling cycle.");
+});
+
+test("incoming sleep intent is confirmed when app usage has no active change", async () => {
+  const store = createStore();
+  const appLike = {
+    checkinConfigStore: store,
+    pendingSleepIntentTimer: null,
+    projectServices: {
+      appUsage: {
+        async getRecentAppUsageEvents() {
+          return {
+            ok: true,
+            events: [
+              { time: "2026-05-18T15:31:00.000Z", event: "screen_off" },
+            ],
+          };
+        },
+      },
+    },
+    clearPendingSleepIntentTimer: CyberbossApp.prototype.clearPendingSleepIntentTimer,
+    shouldConfirmSleepIntent: CyberbossApp.prototype.shouldConfirmSleepIntent,
+  };
+
+  assert.equal(await CyberbossApp.prototype.shouldConfirmSleepIntent.call(appLike, "2026-05-18T15:30:00.000Z"), true);
+});
+
+test("incoming sleep intent is rejected when app usage changes after goodnight", async () => {
+  const store = createStore();
+  const appLike = {
+    checkinConfigStore: store,
+    pendingSleepIntentTimer: null,
+    projectServices: {
+      appUsage: {
+        async getRecentAppUsageEvents() {
+          return {
+            ok: true,
+            events: [
+              { time: "2026-05-18T15:31:00.000Z", event: "app_open" },
+            ],
+          };
+        },
+      },
+    },
+  };
+
+  assert.equal(await CyberbossApp.prototype.shouldConfirmSleepIntent.call(appLike, "2026-05-18T15:30:00.000Z"), false);
+});
+
+test("incoming non sleep message wakes persisted checkin sleep mode", () => {
+  const store = createStore();
+  store.setSleeping(true, new Date("2026-05-18T15:30:00.000Z"));
+  const appLike = {
+    checkinConfigStore: store,
+    pendingSleepIntentTimer: null,
+    clearPendingSleepIntentTimer: CyberbossApp.prototype.clearPendingSleepIntentTimer,
+  };
+
+  CyberbossApp.prototype.handleCheckinSleepStateForIncomingMessage.call(appLike, {
+    text: "早上好",
+  });
+
+  assert.equal(store.isSleeping(), false);
 });
 
 test("handleChunkCommand reports current value and persists updates through the channel adapter", async () => {

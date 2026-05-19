@@ -41,7 +41,7 @@ function writeInboxPng(config, fileName = "cat.png") {
   const inboxDir = path.join(config.stateDir, "inbox", "2026-04-29");
   fs.mkdirSync(inboxDir, { recursive: true });
   const filePath = path.join(inboxDir, fileName);
-  const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==";
+  const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAAB3RJTUUH6gUTAgQcgq6oYAAAAApJREFUCNdjYAAAAAIAAeIhvDMAAAAASUVORK5CYII=";
   fs.writeFileSync(filePath, Buffer.from(pngBase64, "base64"));
   return filePath;
 }

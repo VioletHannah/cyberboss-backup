@@ -5,6 +5,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const SIPS_PATH = "/usr/bin/sips";
+const IMAGEMAGICK_CANDIDATES = ["magick", "convert"];
 const WINDOWS_POWERSHELL_PATH = path.join(
   process.env.SystemRoot || "C:\\Windows",
   "System32",
@@ -49,8 +50,20 @@ function main() {
     return;
   }
 
+  if (process.platform === "linux") {
+    convertToGifWithImageMagick({
+      inputPath: resolvedInputPath,
+      outputPath: resolvedOutputPath,
+      size: normalizedSize,
+    });
+    if (!fs.existsSync(resolvedOutputPath)) {
+      throw new Error(`GIF normalization produced no output: ${resolvedOutputPath}`);
+    }
+    return;
+  }
+
   if (process.platform !== "darwin") {
-    throw new Error("Sticker GIF normalization for non-GIF inputs currently requires macOS `sips` or Windows PowerShell.");
+    throw new Error("Sticker GIF normalization for non-GIF inputs currently requires ImageMagick, macOS `sips`, or Windows PowerShell.");
   }
   if (!fs.existsSync(SIPS_PATH)) {
     throw new Error(`Required tool missing: ${SIPS_PATH}`);
@@ -72,6 +85,28 @@ function main() {
   }
   if (!fs.existsSync(resolvedOutputPath)) {
     throw new Error(`GIF normalization produced no output: ${resolvedOutputPath}`);
+  }
+}
+
+function convertToGifWithImageMagick({ inputPath, outputPath, size }) {
+  const command = findCommand(IMAGEMAGICK_CANDIDATES);
+  if (!command) {
+    throw new Error("Required tool missing: install ImageMagick (`sudo apt install imagemagick`) and ensure `convert` or `magick` is on PATH.");
+  }
+
+  const result = spawnSync(command, [
+    inputPath,
+    "-auto-orient",
+    "-resize", `${size}x${size}!`,
+    outputPath,
+  ], {
+    encoding: "utf8",
+  });
+
+  if (result.status !== 0) {
+    const stderr = String(result.stderr || "").trim();
+    const stdout = String(result.stdout || "").trim();
+    throw new Error(`ImageMagick GIF normalization failed: ${stderr || stdout || `exit ${result.status}`}`);
   }
 }
 
@@ -126,6 +161,19 @@ function convertToGifOnWindows({ inputPath, outputPath, size }) {
     const stdout = String(result.stdout || "").trim();
     throw new Error(`Windows GIF normalization failed: ${stderr || stdout || `exit ${result.status}`}`);
   }
+}
+
+function findCommand(commands) {
+  for (const command of commands) {
+    const result = spawnSync(command, ["-version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.status === 0) {
+      return command;
+    }
+  }
+  return "";
 }
 
 function escapeSingleQuotedPowerShell(value) {
