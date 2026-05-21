@@ -1,0 +1,20 @@
+[Unit]
+Description=Cyberboss Journal Preview
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hannah
+Group=hannah
+WorkingDirectory=/home/hannah/cyberboss-hannah
+Environment=JOURNAL_HOST=0.0.0.0
+Environment=JOURNAL_PORT=8769
+ExecStart=/usr/bin/npm run journal:preview -- 8769
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

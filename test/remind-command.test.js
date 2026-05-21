@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 
 const { ReminderQueueStore } = require("../src/adapters/channel/weixin/reminder-queue-store");
+const { RecurringReminderStore } = require("../src/adapters/channel/weixin/recurring-reminder-store");
 const { ReminderConfigStore } = require("../src/core/reminder-config-store");
 const { CyberbossApp } = require("../src/core/app");
 
@@ -13,6 +14,7 @@ function createStores() {
   return {
     dir,
     queue: new ReminderQueueStore({ filePath: path.join(dir, "reminder-queue.json") }),
+    recurring: new RecurringReminderStore({ filePath: path.join(dir, "recurring-reminders.json") }),
     config: new ReminderConfigStore({ filePath: path.join(dir, "reminder-config.json") }),
   };
 }
@@ -237,4 +239,148 @@ test("legacy reminder queue records normalize as system reminders", () => {
   });
 
   assert.equal(reminder.kind, "system");
+});
+
+test("handleRecurringCommand creates, lists, and disables daily reminders", async () => {
+  const { dir, recurring } = createStores();
+  const sent = [];
+  const originalNow = Date.now;
+  Date.now = () => Date.parse("2026-05-20T13:00:00.000Z");
+  try {
+    const appLike = Object.assign(Object.create(CyberbossApp.prototype), {
+      activeAccountId: "acc-1",
+      recurringReminderStore: recurring,
+      channelAdapter: {
+        async sendText(payload) {
+          sent.push(payload);
+        },
+      },
+    });
+
+    await CyberbossApp.prototype.handleRecurringCommand.call(appLike, {
+      accountId: "acc-1",
+      senderId: "user-1",
+      contextToken: "ctx-1",
+    }, {
+      args: "daily 22:30 提醒我回顾今天的进展",
+    });
+
+    const reminders = readJson(path.join(dir, "recurring-reminders.json")).reminders;
+    assert.equal(reminders.length, 1);
+    assert.equal(reminders[0].enabled, true);
+    assert.equal(reminders[0].accountId, "acc-1");
+    assert.equal(reminders[0].senderId, "user-1");
+    assert.equal(reminders[0].contextToken, "ctx-1");
+    assert.equal(reminders[0].text, "提醒我回顾今天的进展");
+    assert.deepEqual(reminders[0].schedule, {
+      type: "daily",
+      time: "22:30",
+      timezoneOffset: "+08:00",
+    });
+    assert.equal(reminders[0].nextDueAtMs, Date.parse("2026-05-20T14:30:00.000Z"));
+
+    await CyberbossApp.prototype.handleRecurringCommand.call(appLike, {
+      accountId: "acc-1",
+      senderId: "user-1",
+      contextToken: "ctx-1",
+    }, {
+      args: "list",
+    });
+    assert.match(sent[1].text, /daily 22:30 \+08:00/);
+
+    await CyberbossApp.prototype.handleRecurringCommand.call(appLike, {
+      accountId: "acc-1",
+      senderId: "user-1",
+      contextToken: "ctx-1",
+    }, {
+      args: `disable ${reminders[0].id}`,
+    });
+    const disabled = readJson(path.join(dir, "recurring-reminders.json")).reminders[0];
+    assert.equal(disabled.enabled, false);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("flushDueRecurringReminders updates only after successful dispatch and recalculates from now", async () => {
+  const { recurring } = createStores();
+  const originalNow = Date.now;
+  Date.now = () => Date.parse("2026-05-23T15:00:00.000Z");
+  try {
+    recurring.create({
+      id: "recurring-1",
+      enabled: true,
+      accountId: "acc-1",
+      senderId: "user-1",
+      contextToken: "ctx-1",
+      text: "回顾今天的进展",
+      schedule: {
+        type: "daily",
+        time: "22:30",
+        timezoneOffset: "+08:00",
+      },
+      nextDueAtMs: Date.parse("2026-05-20T14:30:00.000Z"),
+      createdAt: "2026-05-20T00:00:00.000Z",
+      updatedAt: "2026-05-20T00:00:00.000Z",
+    });
+
+    const dispatched = [];
+    const appLike = {
+      recurringReminderStore: recurring,
+      resolveReminderWorkspaceRoot() {
+        return "/repo";
+      },
+      async dispatchSystemMessage(message) {
+        dispatched.push(message);
+        return true;
+      },
+    };
+
+    await CyberbossApp.prototype.flushDueRecurringReminders.call(appLike, { accountId: "acc-1" });
+
+    assert.equal(dispatched.length, 1);
+    assert.equal(dispatched[0].text, "[SYSTEM RECURRING REMINDER]\n回顾今天的进展");
+    const [updated] = recurring.list({ accountId: "acc-1", senderId: "user-1" });
+    assert.equal(updated.lastTriggeredAt, "2026-05-23T15:00:00.000Z");
+    assert.equal(updated.nextDueAtMs, Date.parse("2026-05-24T14:30:00.000Z"));
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("flushDueRecurringReminders keeps due reminder unchanged when dispatch fails", async () => {
+  const { recurring } = createStores();
+  const dueAt = Date.parse("2026-05-20T14:30:00.000Z");
+  recurring.create({
+    id: "recurring-1",
+    enabled: true,
+    accountId: "acc-1",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    text: "回顾今天的进展",
+    schedule: {
+      type: "daily",
+      time: "22:30",
+      timezoneOffset: "+08:00",
+    },
+    nextDueAtMs: dueAt,
+    createdAt: "2026-05-20T00:00:00.000Z",
+    updatedAt: "2026-05-20T00:00:00.000Z",
+  });
+
+  const appLike = {
+    recurringReminderStore: recurring,
+    resolveReminderWorkspaceRoot() {
+      return "/repo";
+    },
+    async dispatchSystemMessage() {
+      return false;
+    },
+  };
+
+  await CyberbossApp.prototype.flushDueRecurringReminders.call(appLike, { accountId: "acc-1" });
+
+  const [unchanged] = recurring.list({ accountId: "acc-1", senderId: "user-1" });
+  assert.equal(unchanged.nextDueAtMs, dueAt);
+  assert.equal(unchanged.lastTriggeredAt, undefined);
 });

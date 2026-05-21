@@ -24,6 +24,7 @@ const { SystemMessageDispatcher } = require("./system-message-dispatcher");
 const { TimelineScreenshotQueueStore } = require("./timeline-screenshot-queue-store");
 const { TurnGateStore } = require("./turn-gate-store");
 const { ReminderQueueStore } = require("../adapters/channel/weixin/reminder-queue-store");
+const { RecurringReminderStore, normalizeDailyTime } = require("../adapters/channel/weixin/recurring-reminder-store");
 const { ReminderConfigStore } = require("./reminder-config-store");
 const { parseDelay } = require("../services/reminder-service");
 const { MemoryService } = require("../services/memory-service");
@@ -56,6 +57,7 @@ const FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS = 45_000;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
 const SLEEP_INTENT_CONFIRMATION_MS = 3 * 60_000;
+const DEFAULT_RECURRING_REMINDER_TIMEZONE_OFFSET = "+08:00";
 const SLEEP_INTENT_KEYWORDS = [
   "晚安",
   "睡了",
@@ -100,6 +102,7 @@ class CyberbossApp {
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
     this.timelineScreenshotQueue = new TimelineScreenshotQueueStore({ filePath: config.timelineScreenshotQueueFile });
     this.reminderQueue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
+    this.recurringReminderStore = new RecurringReminderStore({ filePath: config.recurringReminderFile });
     this.reminderConfigStore = new ReminderConfigStore({ filePath: config.reminderConfigFile });
     this.conversationRecorder = new ConversationRecorder({ dirPath: config.conversationDir });
     this.memoryService = new MemoryService(config);
@@ -235,6 +238,7 @@ class CyberbossApp {
         try {
           await Promise.all([
             this.flushDueReminders(account),
+            this.flushDueRecurringReminders(account),
             this.flushPendingInboundMessages(),
             this.flushPendingSystemMessages(),
             this.flushPendingTimelineScreenshots(account),
@@ -254,6 +258,7 @@ class CyberbossApp {
           }
           await Promise.all([
             this.flushDueReminders(account),
+            this.flushDueRecurringReminders(account),
             this.flushPendingInboundMessages(),
             this.flushPendingSystemMessages(),
             this.flushPendingTimelineScreenshots(account),
@@ -1234,7 +1239,11 @@ class CyberbossApp {
       return MIN_LONG_POLL_TIMEOUT_MS;
     }
 
-    const nextDueAtMs = this.reminderQueue.peekNextDueAtMs();
+    const dueTimes = [
+      this.reminderQueue.peekNextDueAtMs(),
+      this.recurringReminderStore.peekNextDueAtMs(this.activeAccountId),
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    const nextDueAtMs = dueTimes.length ? Math.min(...dueTimes) : 0;
     if (!nextDueAtMs) {
       return DEFAULT_LONG_POLL_TIMEOUT_MS;
     }
@@ -1270,6 +1279,38 @@ class CyberbossApp {
           ...reminder,
           dueAtMs: Date.now() + 5_000,
         });
+      }
+    }
+  }
+
+  async flushDueRecurringReminders(account) {
+    const nowMs = Date.now();
+    const dueReminders = this.recurringReminderStore.listDue(nowMs, account.accountId);
+
+    for (const reminder of dueReminders) {
+      const message = {
+        id: `recurring-reminder:${reminder.id}:${nowMs}`,
+        accountId: reminder.accountId,
+        senderId: reminder.senderId,
+        workspaceRoot: this.resolveReminderWorkspaceRoot(reminder),
+        text: buildRecurringReminderSystemTrigger(reminder),
+        createdAt: new Date(nowMs).toISOString(),
+      };
+      try {
+        const dispatched = await this.dispatchSystemMessage(message);
+        if (!dispatched) {
+          continue;
+        }
+        this.recurringReminderStore.markTriggered(reminder.id, {
+          triggeredAtMs: nowMs,
+          nextDueAtMs: computeNextDailyDueAtMs({
+            time: reminder.schedule.time,
+            timezoneOffset: reminder.schedule.timezoneOffset,
+            nowMs,
+          }),
+        });
+      } catch (error) {
+        console.error(`[cyberboss] recurring reminder dispatch failed id=${reminder.id} ${formatErrorMessage(error)}`);
       }
     }
   }
@@ -1359,6 +1400,9 @@ class CyberbossApp {
         return;
       case "remind":
         await this.handleRemindCommand(normalized, command);
+        return;
+      case "recurring":
+        await this.handleRecurringCommand(normalized, command);
         return;
       case "yes":
       case "always":
@@ -1878,6 +1922,115 @@ class CyberbossApp {
       `/remind interval <time> (current: ${formatDuration(current.intervalMs)})`,
       `/remind maxtimes <number> (current: ${current.maxTimes})`,
     ].join("\n");
+  }
+
+  async handleRecurringCommand(normalized, command) {
+    const args = normalizeCommandArgument(command.args);
+    const [subcommand, ...rest] = args.split(/\s+/).filter(Boolean);
+    if (!subcommand) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: buildRecurringUsageText(),
+        contextToken: normalized.contextToken,
+        preserveBlock: true,
+      });
+      return;
+    }
+
+    if (subcommand === "daily") {
+      await this.handleRecurringDailyCommand(normalized, rest);
+      return;
+    }
+    if (subcommand === "list") {
+      await this.handleRecurringListCommand(normalized);
+      return;
+    }
+    if (subcommand === "disable") {
+      await this.handleRecurringDisableCommand(normalized, rest.join(" "));
+      return;
+    }
+
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: buildRecurringUsageText(),
+      contextToken: normalized.contextToken,
+      preserveBlock: true,
+    });
+  }
+
+  async handleRecurringDailyCommand(normalized, args) {
+    const time = normalizeCommandArgument(args[0]);
+    const text = args.slice(1).join(" ").trim();
+    const accountId = normalizeCommandArgument(normalized.accountId || this.activeAccountId);
+    if (!normalizeDailyTime(time) || !text || !accountId) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: "💡 Usage: /recurring daily <HH:mm> <task>",
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+
+    const nowMs = Date.now();
+    const timezoneOffset = DEFAULT_RECURRING_REMINDER_TIMEZONE_OFFSET;
+    const reminder = this.recurringReminderStore.create({
+      id: crypto.randomUUID(),
+      enabled: true,
+      accountId,
+      senderId: normalized.senderId,
+      contextToken: normalized.contextToken,
+      text,
+      schedule: {
+        type: "daily",
+        time,
+        timezoneOffset,
+      },
+      nextDueAtMs: computeNextDailyDueAtMs({ time, timezoneOffset, nowMs }),
+      createdAt: new Date(nowMs).toISOString(),
+      updatedAt: new Date(nowMs).toISOString(),
+    });
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: `✅ Recurring reminder set: daily ${reminder.schedule.time} ${reminder.text}`,
+      contextToken: normalized.contextToken,
+    });
+  }
+
+  async handleRecurringListCommand(normalized) {
+    const reminders = this.recurringReminderStore.list({
+      accountId: normalized.accountId || this.activeAccountId,
+      senderId: normalized.senderId,
+    });
+    const lines = reminders.length
+      ? reminders.map((reminder) => formatRecurringReminderListItem(reminder))
+      : ["No recurring reminders."];
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: lines.join("\n"),
+      contextToken: normalized.contextToken,
+      preserveBlock: true,
+    });
+  }
+
+  async handleRecurringDisableCommand(normalized, rawId) {
+    const id = normalizeCommandArgument(rawId);
+    if (!id) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: "💡 Usage: /recurring disable <id>",
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    const disabled = this.recurringReminderStore.disable(id, {
+      accountId: normalized.accountId || this.activeAccountId,
+      senderId: normalized.senderId,
+    });
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: disabled ? `✅ Recurring reminder disabled: ${disabled.id}` : `⚠️ Recurring reminder not found: ${id}`,
+      contextToken: normalized.contextToken,
+    });
   }
 
   async handleApprovalCommand(normalized, command) {
@@ -2606,6 +2759,64 @@ function formatDuration(ms) {
     remainingMs -= amount * unitMs;
   }
   return parts.join("") || `${Math.ceil(totalMs / 1_000)}s`;
+}
+
+function buildRecurringUsageText() {
+  return [
+    "💡 Usage: /recurring daily <HH:mm> <task>",
+    "Examples: /recurring daily 22:30 提醒我回顾今天的进展",
+    "/recurring list",
+    "/recurring disable <id>",
+  ].join("\n");
+}
+
+function buildRecurringReminderSystemTrigger(reminder) {
+  return [
+    "[SYSTEM RECURRING REMINDER]",
+    reminder.text,
+  ].join("\n");
+}
+
+function formatRecurringReminderListItem(reminder) {
+  const status = reminder.enabled ? "enabled" : "disabled";
+  const nextDue = Number.isFinite(reminder.nextDueAtMs)
+    ? new Date(reminder.nextDueAtMs).toISOString()
+    : "(unknown)";
+  return `${reminder.id} ${status} daily ${reminder.schedule.time} ${reminder.schedule.timezoneOffset} next=${nextDue} ${reminder.text}`;
+}
+
+function computeNextDailyDueAtMs({ time = "", timezoneOffset = DEFAULT_RECURRING_REMINDER_TIMEZONE_OFFSET, nowMs = Date.now() } = {}) {
+  const normalizedTime = normalizeDailyTime(time);
+  const offsetMs = parseTimezoneOffsetMs(timezoneOffset);
+  const normalizedNowMs = Number(nowMs);
+  if (!normalizedTime || !Number.isFinite(offsetMs) || !Number.isFinite(normalizedNowMs)) {
+    return 0;
+  }
+  const [hour, minute] = normalizedTime.split(":").map((value) => Number.parseInt(value, 10));
+  const shiftedNow = new Date(normalizedNowMs + offsetMs);
+  const year = shiftedNow.getUTCFullYear();
+  const month = shiftedNow.getUTCMonth();
+  const day = shiftedNow.getUTCDate();
+  const candidate = Date.UTC(year, month, day, hour, minute, 0, 0) - offsetMs;
+  if (candidate > normalizedNowMs) {
+    return candidate;
+  }
+  return Date.UTC(year, month, day + 1, hour, minute, 0, 0) - offsetMs;
+}
+
+function parseTimezoneOffsetMs(value) {
+  const normalized = normalizeText(value);
+  const match = normalized.match(/^([+-])(\d{2}):(\d{2})$/);
+  if (!match) {
+    return NaN;
+  }
+  const hours = Number.parseInt(match[2], 10);
+  const minutes = Number.parseInt(match[3], 10);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 14 || minutes > 59) {
+    return NaN;
+  }
+  const sign = match[1] === "-" ? -1 : 1;
+  return sign * ((hours * 60) + minutes) * 60_000;
 }
 
 function normalizeIsoTime(value) {

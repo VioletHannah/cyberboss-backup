@@ -142,6 +142,13 @@ const COMMAND_GROUPS = [
         weixin: ["/remind <time> <task>", "/remind interval <time>", "/remind maxtimes <number>"],
         status: "active",
       },
+      {
+        action: "reminder.recurring",
+        summary: "Set or manage local recurring reminders",
+        terminal: [],
+        weixin: ["/recurring daily <HH:mm> <task>", "/recurring list", "/recurring disable <id>"],
+        status: "active",
+      },
     ],
   },
   {
