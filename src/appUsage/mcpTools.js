@@ -5,7 +5,7 @@ const APP_USAGE_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        device_id: { type: "string", description: "Optional device id, default default_phone." },
+        device_id: { type: "string", description: "Optional device id, default vivos30promini." },
       },
       additionalProperties: false,
     },
@@ -19,7 +19,7 @@ const APP_USAGE_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        device_id: { type: "string", description: "Optional device id, default default_phone." },
+        device_id: { type: "string", description: "Optional device id, default vivos30promini." },
         limit: { type: "integer", description: "Optional event limit, default 20, max 100." },
       },
       additionalProperties: false,
@@ -34,7 +34,7 @@ const APP_USAGE_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        device_id: { type: "string", description: "Optional device id, default default_phone." },
+        device_id: { type: "string", description: "Optional device id, default vivos30promini." },
         from: { type: "string", description: "Optional start datetime. Defaults to today 00:00 local time." },
         to: { type: "string", description: "Optional end datetime. Defaults to now." },
       },
@@ -50,7 +50,7 @@ const APP_USAGE_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        device_id: { type: "string", description: "Optional device id, default default_phone." },
+        device_id: { type: "string", description: "Optional device id, default vivos30promini." },
       },
       additionalProperties: false,
     },

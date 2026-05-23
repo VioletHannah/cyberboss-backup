@@ -1,6 +1,6 @@
 const USING_TIMEOUT_MS = 5 * 60 * 1000;
 
-const DEFAULT_DEVICE_ID = "default_phone";
+const DEFAULT_DEVICE_ID = "vivos30promini";
 const ALLOWED_EVENTS = new Set([
   "app_open",
   "app_close",

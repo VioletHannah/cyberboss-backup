@@ -49,6 +49,21 @@ test("app usage service records events and exposes current usage", async () => {
   assert.equal(recent.events[0].event, "app_open");
 });
 
+test("app usage service defaults to the primary phone device", async () => {
+  const { service } = await createService();
+  await service.recordAppUsageEvent({
+    app_package: "com.tencent.mm",
+    app_name: "WeChat",
+    event: "app_open",
+    timestamp: minutesAgo(1),
+  });
+
+  const current = await service.getCurrentAppUsage();
+  assert.equal(current.ok, true);
+  assert.equal(current.device_id, "vivos30promini");
+  assert.equal(current.current_app.app_package, "com.tencent.mm");
+});
+
 test("app usage service summarizes open close and heartbeat durations", async () => {
   const { service } = await createService();
   await service.recordAppUsageEvent({
