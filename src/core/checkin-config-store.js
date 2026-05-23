@@ -81,6 +81,22 @@ class CheckinConfigStore {
       sleepStateChangedAt: this.state.sleepStateChangedAt,
     };
   }
+
+  getSleepHours(fallbackHours = resolveDefaultSleepHours()) {
+    this.load();
+    return normalizeSleepHours(this.state, fallbackHours);
+  }
+
+  setSleepHours(hours) {
+    const normalized = normalizeSleepHours(hours);
+    this.load();
+    this.state = {
+      ...this.state,
+      ...normalized,
+    };
+    this.save();
+    return { ...normalized };
+  }
 }
 
 function resolveDefaultCheckinRange(env = process.env) {
@@ -101,6 +117,13 @@ function resolveDefaultSleepRange(env = process.env) {
   return { minIntervalMs, maxIntervalMs };
 }
 
+function resolveDefaultSleepHours() {
+  return {
+    sleepHourStart: SLEEP_HOUR_START,
+    sleepHourEnd: SLEEP_HOUR_END,
+  };
+}
+
 function parseCheckinRangeMinutes(input) {
   const normalized = typeof input === "string" ? input.trim() : "";
   const match = normalized.match(/^(\d+)\s*-\s*(\d+)$/);
@@ -113,6 +136,20 @@ function parseCheckinRangeMinutes(input) {
     return null;
   }
   return { minMinutes, maxMinutes };
+}
+
+function parseSleepHourRange(input) {
+  const normalized = typeof input === "string" ? input.trim() : "";
+  const match = normalized.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+  if (!match) {
+    return null;
+  }
+  const sleepHourStart = Number.parseInt(match[1], 10);
+  const sleepHourEnd = Number.parseInt(match[2], 10);
+  if (!isValidSleepHour(sleepHourStart) || !isValidSleepHour(sleepHourEnd) || sleepHourStart === sleepHourEnd) {
+    return null;
+  }
+  return { sleepHourStart, sleepHourEnd };
 }
 
 function normalizePersistedState(value) {
@@ -132,6 +169,11 @@ function normalizePersistedState(value) {
   }
   if (value.sleeping === true || value.sleeping === false) {
     state.sleeping = value.sleeping;
+  }
+  const sleepHours = normalizeSleepHours(value, null);
+  if (sleepHours) {
+    state.sleepHourStart = sleepHours.sleepHourStart;
+    state.sleepHourEnd = sleepHours.sleepHourEnd;
   }
   const changedAt = normalizeIsoTimestamp(value.sleepStateChangedAt);
   if (changedAt) {
@@ -171,15 +213,37 @@ function normalizeIntervalRange(value, fallbackRange = resolveDefaultCheckinRang
   return normalized || fallback;
 }
 
-function isSleepHour(date = new Date()) {
+function normalizeSleepHours(value, fallbackHours = resolveDefaultSleepHours()) {
+  const sleepHourStart = Number.parseInt(String(value?.sleepHourStart ?? ""), 10);
+  const sleepHourEnd = Number.parseInt(String(value?.sleepHourEnd ?? ""), 10);
+  if (isValidSleepHour(sleepHourStart) && isValidSleepHour(sleepHourEnd) && sleepHourStart !== sleepHourEnd) {
+    return { sleepHourStart, sleepHourEnd };
+  }
+  if (!fallbackHours) {
+    return null;
+  }
+  return normalizeSleepHours(fallbackHours, {
+    sleepHourStart: SLEEP_HOUR_START,
+    sleepHourEnd: SLEEP_HOUR_END,
+  });
+}
+
+function isValidSleepHour(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 23;
+}
+
+function isSleepHour(date = new Date(), sleepHours = resolveDefaultSleepHours()) {
   const hour = getShanghaiHour(date);
-  if (SLEEP_HOUR_START === SLEEP_HOUR_END) {
+  const normalized = normalizeSleepHours(sleepHours);
+  const start = normalized.sleepHourStart;
+  const end = normalized.sleepHourEnd;
+  if (start === end) {
     return false;
   }
-  if (SLEEP_HOUR_START < SLEEP_HOUR_END) {
-    return hour >= SLEEP_HOUR_START && hour < SLEEP_HOUR_END;
+  if (start < end) {
+    return hour >= start && hour < end;
   }
-  return hour >= SLEEP_HOUR_START || hour < SLEEP_HOUR_END;
+  return hour >= start || hour < end;
 }
 
 function getShanghaiHour(date) {
@@ -225,6 +289,8 @@ module.exports = {
   SLEEP_HOUR_END,
   isSleepHour,
   parseCheckinRangeMinutes,
+  parseSleepHourRange,
   resolveDefaultCheckinRange,
   resolveDefaultSleepRange,
+  resolveDefaultSleepHours,
 };

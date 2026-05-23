@@ -29,7 +29,7 @@ async function runSystemCheckinPoller(config) {
 
   while (true) {
     const sleeping = checkinConfigStore.isSleeping();
-    const sleepHour = isSleepHour();
+    const sleepHour = isSleepHour(new Date(), checkinConfigStore.getSleepHours());
     currentRange = sleeping || sleepHour
       ? checkinConfigStore.getSleepRange(defaultSleepRange)
       : checkinConfigStore.getRange(defaultRange);

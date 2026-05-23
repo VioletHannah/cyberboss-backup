@@ -36,6 +36,7 @@ The runtime can be `codex` or `claudecode`, but the documented command surface s
 - `thread.switch`
 - `thread.stop`
 - `system.checkin_range`
+- `system.sleep_time`
 - `channel.chunk_min`
 - `reminder.interactive`
 
@@ -100,6 +101,7 @@ Notes:
 - `/stop`
 - `/switch <threadId>`
 - `/checkin <min>-<max>`
+- `/sleeptime <start>-<end>`
 - `/chunk <number>`
 - `/remind <time> <task>`
 - `/remind interval <time>`

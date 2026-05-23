@@ -12,6 +12,7 @@ const {
   DEFAULT_SLEEP_MAX_INTERVAL_MS,
   isSleepHour,
   parseCheckinRangeMinutes,
+  parseSleepHourRange,
   resolveDefaultSleepRange,
 } = require("../src/core/checkin-config-store");
 const { CyberbossApp, detectSleepIntent } = require("../src/core/app");
@@ -26,6 +27,14 @@ test("parseCheckinRangeMinutes accepts min-max minute ranges", () => {
   assert.deepEqual(parseCheckinRangeMinutes("5 - 10"), { minMinutes: 5, maxMinutes: 10 });
   assert.equal(parseCheckinRangeMinutes("10-3"), null);
   assert.equal(parseCheckinRangeMinutes("abc"), null);
+});
+
+test("parseSleepHourRange accepts Beijing hour ranges", () => {
+  assert.deepEqual(parseSleepHourRange("1-8"), { sleepHourStart: 1, sleepHourEnd: 8 });
+  assert.deepEqual(parseSleepHourRange("22 - 7"), { sleepHourStart: 22, sleepHourEnd: 7 });
+  assert.equal(parseSleepHourRange("8-8"), null);
+  assert.equal(parseSleepHourRange("24-8"), null);
+  assert.equal(parseSleepHourRange("abc"), null);
 });
 
 test("checkin config store falls back to defaults and persists overrides", () => {
@@ -49,6 +58,7 @@ test("checkin config store persists sleep range and sleeping state independently
   });
 
   store.setSleeping(true, new Date("2026-05-18T02:30:00.000Z"));
+  store.setSleepHours({ sleepHourStart: 1, sleepHourEnd: 8 });
   store.setRange({ minIntervalMs: 4 * 60_000, maxIntervalMs: 25 * 60_000 });
   assert.equal(store.isSleeping(), true);
 
@@ -58,6 +68,10 @@ test("checkin config store persists sleep range and sleeping state independently
     maxIntervalMs: 25 * 60_000,
   });
   assert.equal(reloaded.isSleeping(), true);
+  assert.deepEqual(reloaded.getSleepHours(), {
+    sleepHourStart: 1,
+    sleepHourEnd: 8,
+  });
 });
 
 test("checkin config store reads persisted sleep interval overrides", () => {
@@ -67,10 +81,16 @@ test("checkin config store reads persisted sleep interval overrides", () => {
     maxIntervalMs: 60 * 60_000,
     sleepMinIntervalMs: 5 * 60 * 60_000,
     sleepMaxIntervalMs: 7 * 60 * 60_000,
+    sleepHourStart: 22,
+    sleepHourEnd: 7,
   }, null, 2));
   assert.deepEqual(store.getSleepRange(), {
     minIntervalMs: 5 * 60 * 60_000,
     maxIntervalMs: 7 * 60 * 60_000,
+  });
+  assert.deepEqual(store.getSleepHours(), {
+    sleepHourStart: 22,
+    sleepHourEnd: 7,
   });
 });
 
@@ -84,9 +104,11 @@ test("resolveDefaultSleepRange reads sleep interval environment variables", () =
   });
 });
 
-test("isSleepHour uses Asia Shanghai hours", () => {
+test("isSleepHour uses configurable Asia Shanghai hours", () => {
   assert.equal(isSleepHour(new Date("2026-05-18T17:00:00.000Z")), true);
   assert.equal(isSleepHour(new Date("2026-05-19T00:00:00.000Z")), false);
+  assert.equal(isSleepHour(new Date("2026-05-18T17:00:00.000Z"), { sleepHourStart: 1, sleepHourEnd: 8 }), true);
+  assert.equal(isSleepHour(new Date("2026-05-18T16:30:00.000Z"), { sleepHourStart: 1, sleepHourEnd: 8 }), false);
 });
 
 test("detectSleepIntent matches configured sleep phrases case-insensitively", () => {
@@ -94,6 +116,33 @@ test("detectSleepIntent matches configured sleep phrases case-insensitively", ()
   assert.equal(detectSleepIntent("GOOD NIGHT"), true);
   assert.equal(detectSleepIntent("going to bed now"), true);
   assert.equal(detectSleepIntent("还在处理事情"), false);
+});
+
+test("handleSleeptimeCommand stores the new sleep hours and replies in English", async () => {
+  const sent = [];
+  const store = createStore();
+  const appLike = {
+    checkinConfigStore: store,
+    channelAdapter: {
+      async sendText(payload) {
+        sent.push(payload);
+      },
+    },
+  };
+
+  await CyberbossApp.prototype.handleSleeptimeCommand.call(appLike, {
+    senderId: "user-1",
+    contextToken: "ctx-1",
+  }, {
+    args: "1-8",
+  });
+
+  assert.deepEqual(store.getSleepHours(), {
+    sleepHourStart: 1,
+    sleepHourEnd: 8,
+  });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, "✅ Sleep check-in hours reset to 1-8 Beijing time and will apply on the next polling cycle.");
 });
 
 test("handleCheckinCommand stores the new range and replies in English", async () => {

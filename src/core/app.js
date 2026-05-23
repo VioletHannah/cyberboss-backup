@@ -14,7 +14,12 @@ const {
   STICKER_TAG_GUIDANCE,
 } = require("../services/sticker-service");
 const { buildWeixinHelpText } = require("./command-registry");
-const { CheckinConfigStore, parseCheckinRangeMinutes, resolveDefaultCheckinRange } = require("./checkin-config-store");
+const {
+  CheckinConfigStore,
+  parseCheckinRangeMinutes,
+  parseSleepHourRange,
+  resolveDefaultCheckinRange,
+} = require("./checkin-config-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./default-targets");
 const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
@@ -56,7 +61,7 @@ const FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS = 8_000;
 const FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS = 45_000;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
-const SLEEP_INTENT_CONFIRMATION_MS = 3 * 60_000;
+const SLEEP_INTENT_CONFIRMATION_MS = 15 * 60_000;
 const DEFAULT_RECURRING_REMINDER_TIMEZONE_OFFSET = "+08:00";
 const SLEEP_INTENT_KEYWORDS = [
   "晚安",
@@ -1395,6 +1400,9 @@ class CyberbossApp {
       case "checkin":
         await this.handleCheckinCommand(normalized, command);
         return;
+      case "sleeptime":
+        await this.handleSleeptimeCommand(normalized, command);
+        return;
       case "chunk":
         await this.handleChunkCommand(normalized, command);
         return;
@@ -1772,6 +1780,36 @@ class CyberbossApp {
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
       text: `✅ Check-in interval reset to ${parsedRange.minMinutes}-${parsedRange.maxMinutes} minutes and will apply on the next polling cycle.`,
+      contextToken: normalized.contextToken,
+    });
+  }
+
+  async handleSleeptimeCommand(normalized, command) {
+    const rangeInput = normalizeCommandArgument(command.args);
+    if (!rangeInput) {
+      const currentHours = this.checkinConfigStore.getSleepHours();
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `⏰ Current sleep check-in hours are ${currentHours.sleepHourStart}-${currentHours.sleepHourEnd} Beijing time.`,
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+
+    const parsedRange = parseSleepHourRange(rangeInput);
+    if (!parsedRange) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: "💡 Usage: /sleeptime <start>-<end> (0-23 Beijing time, e.g. /sleeptime 1-8)",
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+
+    this.checkinConfigStore.setSleepHours(parsedRange);
+    await this.channelAdapter.sendText({
+      userId: normalized.senderId,
+      text: `✅ Sleep check-in hours reset to ${parsedRange.sleepHourStart}-${parsedRange.sleepHourEnd} Beijing time and will apply on the next polling cycle.`,
       contextToken: normalized.contextToken,
     });
   }

@@ -129,6 +129,13 @@ const COMMAND_GROUPS = [
         status: "active",
       },
       {
+        action: "system.sleep_time",
+        summary: "Reset the Beijing-time sleep check-in hours",
+        terminal: [],
+        weixin: ["/sleeptime <start>-<end>"],
+        status: "active",
+      },
+      {
         action: "channel.chunk_min",
         summary: "Adjust the minimum short-chunk merge size for WeChat replies",
         terminal: [],
@@ -350,6 +357,7 @@ function actionEmoji(action) {
     case "thread.switch": return "🔀";
     case "thread.stop": return "⏹️";
     case "system.checkin_range": return "⏰";
+    case "system.sleep_time": return "🌙";
     case "reminder.interactive": return "⏰";
     case "approval.accept_once": return "✅";
     case "approval.accept_workspace": return "💡";
